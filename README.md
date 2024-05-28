@@ -114,6 +114,7 @@ B2:1 2 3 4
 ### Features
 
 - Obvious quality of life features: error handling, scrolling, undo/redo.
+- Upstream issues in the unparser.
 - Storing external data in directories other than that of `server.py`.
 - A prettier code unparser and data serialiser, to make it easy to review changes via text comparison.
 - No limit on the number of cells (which probably means changing the backend/calc language).
