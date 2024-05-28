@@ -111,7 +111,7 @@ B2:1 2 3 4
 
 ## What needs work
 
-### The wishlist
+### Features
 
 - Obvious quality of life features: error handling, scrolling, undo/redo.
 - Storing external data in directories other than that of `server.py`.
@@ -129,6 +129,11 @@ B2:1 2 3 4
 - A syntax that has nice dict and table literals and lets you specify expected/conversion types for external files.
 - Sandboxing.
 - A UI for editing calculated columns, and per-column formatting rules.
+
+### Packaging
+
+- A fully-in-browser WASM version, to make Mesh easier to try out.
+- A containerised (Dockerised?) version, to make installation easier.
 
 ### Deep dive: editable dicts and tables
 
@@ -149,18 +154,9 @@ Potentially those representations could *literally* be dict and table data struc
 
 Ideally dict literals would be a list of key:value pairs, and table literals would be defined row-wise to flow with the portrait shape of a text file - even if that data was stored as columns behind the scenes.
 
-## Future work
-
-Aside from 'what needs work', above:
-
-- Officially, ngn/k is "no longer supported". But I think Mesh could be ported to any k dialect or other language that:
-  - can go back and forth between text and AST representations (parse and unparse), and
-  - has some built-in serialisation formats and rich literal types (lists, dicts, tables; JSON, CSV).
-- A fully-in-browser WASM version, to make Mesh easier to try out.
-- A containerised (Dockerised?) version, to make installation easier.
-- Maybe having workbooks be a single 'zipped bundle' isn't so bad, if the user can tweak Git to 'look in' or else manually zip/unzip come commit-time (see eg [here](https://stackoverflow.com/questions/8001663/can-git-treat-zip-files-as-directories-and-files-inside-the-zip-as-blobs)). But maybe it's overall less complex if they are unzipped by default.
-
 ## Why the k family? Why not Python or JavaScript?
+
+Officially, ngn/k is [no longer supported](https://codeberg.org/ngn/k). But Mesh could potentially be ported to other k dialects or other languages.
 
 To work with Mesh's approach to spreadsheets, the language needs certain features:
 
@@ -168,8 +164,8 @@ To work with Mesh's approach to spreadsheets, the language needs certain feature
 2. Formulas for simple data processing, such as sums and table joins, should be short.
 3. It should have literals for lists, dicts, and tables. Those literals should have unique AST representations so that they are easy for Mesh to edit and can be losslessly round-tripped.
 
-Bonus points if the language is already on every machine or otherwise small enough to quickly download.
+Bonus points it has built-in serialisation formats (JSON, CSV) and is already on every machine or otherwise small enough to quickly download.
 
 ## Thank you
 
-Thanks to Arthur Whitney for inventing k, to ngn for his implementation of k6, and to my family and friends for their support.
+Thanks to Arthur Whitney for inventing and refining k, to ngn for his implementation of k6, and to my family and friends for their support.
