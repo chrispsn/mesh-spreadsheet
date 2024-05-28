@@ -142,33 +142,10 @@ Conceivably Mesh could check the type and structure of the arguments to `!` (and
 
 Ideally, Mesh's formula language would:
 
-1. include special dict and table literal representations, that
+1. include special dict and table literal representations (ngn/k doesn't), that
 2. have unique AST representations.
 
 Potentially those representations could *literally* be dict and table data structures. Then the backend could just edit them like we would in userland, and they'd also be much easier for Mesh to losslessly unparse: if dict literals just appeared in the AST as `!` function calls, the unparser wouldn't know whether they intended a make-dict function call or a dict literal.
-
-So a dict like `[a:1;b:2]` would look like this in the AST:
-
-```
-`a`b!1 2
-
-/ as opposed to a function call:
-(!
- `a`b
-  1 2)
-```
-
-And a table like `[[]a:1 2]` would look like this in the AST:
-
-```
-+`a!1 2
-
-/ as opposed to a function call:
-(+
- (!
-  `a
-  1 2))
-```
 
 Ideally dict literals would be a list of key:value pairs, and table literals would be defined row-wise to flow with the portrait shape of a text file - even if that data was stored as columns behind the scenes.
 
