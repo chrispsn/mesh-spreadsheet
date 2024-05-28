@@ -1208,7 +1208,7 @@ test[(`"a.b")!,("A1";"B2`hi")] deps[,`"a.b"; ,(+;,`A1;(,`B2;`hi))]
 / paste the client string sent to the server here with prefix 'msg:'
 / to see what the server is doing.
 
-/ msg:"{\"celltype\":\"empty\",\"action\":\"show\",\"payload\":\"\",\"coords\":[9,5],\"head\":\"J6\",\"source\":\"A1:1+2\\nB2:(,`exportTo)!,\\\"here.json\\\"\\nB2:1 2 3\\n\",\"path\":[]}"
+/ msg: ..
 
 / ---------
 / MAIN LOOP
