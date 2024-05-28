@@ -28,7 +28,7 @@ Mesh is a spreadsheet program that fits into software's typical development and 
 - Formulas start with a `=` prefix: `=1+B2`.
 - Press `F2` or click the formula bar to edit a formula instead of overwriting it. Cell precedents are highlighted in the grid.
 - Hardcode cells look different to formula cells.
-- Format cell contents using [Intl.NumberFormat syntax](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat). For example, highlight a cell and press `Ctrl-Shift-F4` to show values in dollars.
+- Format cell contents using [Intl.NumberFormat syntax](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat). For example, highlight a cell and press `Ctrl-Shift-4` to show values in dollars.
 - Cell names: toggle with `F3`. Change a cell's name by writing to its name cell. Mesh will update other cell formulas to use the new name.
 - Calculated table columns: ```table[`newCol]:1+table`existingCol```.
 - Connect to external data: drag a file onto the grid. For now, the file needs to be stored in the same folder as `server.py`.
@@ -165,7 +165,7 @@ To work with Mesh's approach to spreadsheets, the language needs certain feature
 2. Formulas for simple data processing, such as sums and table joins, should be short.
 3. It should have literals for lists, dicts, and tables. Those literals should have unique AST representations so that they are easy for Mesh to edit and can be losslessly round-tripped.
 
-Bonus points it has built-in serialisation formats (JSON, CSV) and is already on every machine or otherwise small enough to quickly download.
+Bonus points if it has built-in serialisation formats (JSON, CSV) and is already on every machine or otherwise small enough to quickly download.
 
 ## Thank you
 
