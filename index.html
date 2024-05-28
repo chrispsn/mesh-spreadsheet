@@ -1,0 +1,645 @@
+<!--
+Copyright 2024 Chris Pearson
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+<!doctype html>
+
+<head>
+    <title>Mesh Spreadsheet</title>
+    <meta charset="UTF-8">
+    <style>
+
+        html {font-family: sans-serif; font-size: 12px; color: white; background-color: rgb(38, 38, 38)}
+        html, body {height:100%; width:100%; margin: 0; padding: 0}
+        main {display: flex; flex-direction: row; margin-bottom: 1em}
+        textarea {background-color: rgb(38, 38, 38); color: white; width: 100%;
+                  font-size: 14px; margin-bottom: 0}
+
+        .buttonHover:hover {background-color: rgb(168,135,43); cursor: pointer}
+
+        #formula-bar {
+            resize: vertical; width: 100%; height: 1.65em; min-height: 1.65em;
+            font-family: Consolas, monospace;
+            background-color: rgb(55, 55, 55);
+            border: 0;
+            border-bottom: 1px solid rgb(170, 170, 170);
+            border-right: 1px solid rgb(170, 170, 170);
+            box-sizing: border-box;
+            padding-left: 0.5em}
+        #formula-bar:disabled { background-color:#a22 }
+
+        #grid-container {display: flex; flex-direction: column}
+        #sidebar-grid-container {display: flex}
+        #sidebar {visibility: hidden; width: 0;
+                  display: flex; 
+                  border-right: 1px solid rgb(170, 170, 170);
+                  border-bottom: 1px solid rgb(170, 170, 170);
+                  flex-direction: column}
+        #sidebar.open {visibility: visible; width: 20em}
+        #sidebar h3 {padding-left: 0.5em}
+        #sidebar #read-write-list {margin-top: 0}
+        #sidebar #read-write-list p {margin-top: 0}
+        #filename {width: 100%; padding: 0.3em 0; margin: 0; padding-left: 0.5em;
+                   border-bottom: 1px solid #777; box-sizing: border-box}
+        #io {list-style: none; padding: 0; display: flex; justify-content: center}
+        #io .button {display: inline; border: 1px solid white; border-radius: 5px;
+                    margin: 0.5em; padding: 0.5em}
+        #add-connection {height:1.5em; width:1.5em;
+                         margin-left:1em; margin-top:0.8em}
+        #connection-dropzone-box { margin-left: 1em; margin-right: 1em; min-height: 20em}
+        #connection-dropzone-box.active { outline: 3px dashed rgb(168,135,43) }
+        #grid {border-spacing: 0; border: 1px solid rgb(170, 170, 170); border-top: 0; border-left: 0;
+               /* padding: 0.75em; */
+               outline: none /* removes border when focused */}
+        /* #grid th {color: #777} */
+        #grid thead th:first-child {border-right: 1px solid #777}
+        #grid thead th {padding: 0.3em 0; border-bottom: 1px solid #777}
+        #grid tbody th {padding: 0 0.3em; border-right: 1px solid #777}
+        #grid td {
+            height: 1.2em; min-width: 6em; max-width: 16em;
+            padding: 3px; /* 2px 4px */
+            /* Mesh JS (v1) fixed this overlapping by always having
+               one row/col of 'empty padding' */
+            border: 1px solid rgb(78,78,78); 
+            /* experimenting with big values */
+            text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+            cursor: cell
+        }
+        #grid td.empty {border: 0; background-color: rgb(38, 38, 38)}
+        #grid td.number {text-align: right}
+        #grid td.symbol {text-align: center}
+        #grid td.fn     {text-align: center; color: #e18254}
+        #grid td.nested::before {content:"⟨"}
+        #grid td.nested::after {content:"⟩"}
+        #grid td.hard {color: #599eff}
+        #grid td.name {color: #e65f5f}
+        #grid td.colheader {background-color: rgb(66, 91, 150); border: 0}
+        #grid td.calculated {background-color: #ce532e}  /* {background-color: #bb3c49} */
+
+        #grid td.key {background-color: rgb(55, 123, 113); border: 0}
+        #grid td.band {background-color: rgb(62,62,62)}
+        #grid td.special {color: orange; text-align: center}
+        #grid td.target {background-color: rgb(129, 24, 24)}  /* {background-color: lightblue} */
+        #grid td.add, #grid td.addCol, #grid td.addRow {text-align: center; color: rgb(138, 138, 138)}
+        #grid td.overlap {background-color: #953434; border: #4f1b1b; text-align: center}
+        /* 🗗 or 🚨 instead of 'OVERLAP'?
+           see https://www.stefanjudis.com/today-i-learned/css-content-accepts-alternative-text/ */
+        #grid td.overlap::before {content:"OVERLAP"}
+        #grid td.overlap::after {content:""}
+        #grid td.selected {background-color: rgb(168, 135, 43); color: white}
+
+	/* .precedent {box-shadow: 0 0 10px 5px #48abe0;} */
+        /*
+        // testing animated precedent highlights
+        // https://codepen.io/stg/pen/YGRpZJ?editors=0100
+        @keyframes precedent-anim {
+            0% {background-position: 0 0, 0 100%, 0 0, 100% 0} 
+            100% {background-position: 20px 0, -20px 100%, 0 -20px, 100% 20px}
+        }
+        .precedent {
+            border: 1px solid rgb(38,38,38) !important;
+            background-size: 20px 2px, 20px 2px, 2px 20px, 2px 20px;
+            background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+            animation-name: precedent-anim;
+	    animation-duration: 1s;
+	    animation-timing-function: linear;
+	    animation-iteration-count: infinite;
+	    animation-play-state: running;
+            background-image:
+		linear-gradient(to right, rgb(38,38,38) 50%, #a0a 50%), 
+		linear-gradient(to right, rgb(38,38,38) 50%, #a0a 50%),
+		linear-gradient(to bottom, rgb(38,38,38) 50%, #a0a 50%),
+		linear-gradient(to bottom, rgb(38,38,38) 50%, #a0a 50%);
+        }
+        */
+        .precedent {background-color: #510720;
+                     border: 1px solid #7b0d31 !important} /* rgb(38,38,38) */
+        #side-container {display: flex; flex-direction: column; width: 100%; min-height: 100%}
+        #stats, #sheetsource {padding-left: 0.5em; box-sizing: border-box}
+        #stats {height: 1.65em; margin: 0; font-family: monospace; font-size: 14px;
+                border-bottom: 1px solid rgb(170, 170, 170)}
+        #stats td {display: table-cell; max-width: 0}
+        #sheetsource {box-sizing: border-box; resize:none; height: 100%;
+                      border: 0; border-bottom: 1px solid rgb(170, 170, 170); padding-right: 0}
+
+        .debug {width: 100%; min-height: 100%; font-size: 14px}
+
+        /* light theme (disabled)
+        @media (prefers-color-scheme: light) {
+            html {background-color: white; color: black}
+            #formula-bar, #sheetsource {background-color: white; color: black}
+            #formula-bar:disabled { background-color: #ffc6c6 }
+            #io .button {border: 1px solid black}
+            #grid td.empty {background-color: white}
+            #grid td.hard {color: #000cc8}
+            #grid td.name {color: #e10000}
+            #grid td.key {background-color: #b5ffb5}
+            #grid td.colheader {color: white}
+            #grid td.overlap {color: white}
+            #grid thead th:first-child:hover {background-color: #eee}
+            #grid td.selected {background-color: rgb(255,227,150); color: black}
+        }
+        */
+
+    </style>
+
+</head>
+
+<body>
+
+    <main>
+
+    <div id="grid-container">
+        <textarea id="formula-bar" placeholder="i am a formula bar! try writing 123 or 1 2 3 or =1+2 3"></textarea>
+        <div id="sidebar-grid-container">
+            <nav id="sidebar">
+                <p id="filename">Unsaved</p>
+                <ul id="io">
+                    <li class="button buttonHover" onclick="save()">Save 🖫</li>
+                    <label class="button buttonHover" for="file_chooser">Load 🗁</label>
+                    <input type="file" id="file_chooser" name="file_chooser" accept=".ngnk" style="display: none">
+                </ul>
+                <div id="connection-dropzone">
+                <div style="display:flex">
+                    <h3>Read-Write Files</h3>
+                    <!-- <button id="add-connection">+</button> -->
+                </div>
+                <div id="connection-dropzone-box">
+                    <ul id="read-write-list">
+                        <li>123
+                        <li>456
+                    </ul>
+                </div>
+                </div>
+            </nav>
+            <table id="grid" tabindex="0">
+                <thead></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="side-container">
+        <table id="stats">
+            <tr>
+                <td>sum</td>   <td id="sum"></td>
+                <td>count</td> <td id="count"></td>
+                <td>avg</td>   <td id="avg"></td>
+            </tr>
+        </table>
+        <textarea id="sheetsource"></textarea>
+    </div>
+
+    </main>
+
+    <script>
+        'use strict'
+
+        // Helper functions
+        function head_collision(target) {
+            // TODO will need to also include locs once we add explicit names
+            // TODO should this really hit if the incoming cell uses a name as its head
+            // rather than the loc? Because then there won't be an ID collision...
+            // Maybe easier to stop this because then need to do a collision check if the
+            // name is removed, etc.
+            const heads = Object.values(response.cells).map(c => c.head)
+            if (heads.includes(target)) {
+                alert("Sorry, some other data already uses that cell as its head.")
+                return true;
+            }
+            return false;
+        }
+
+        // Grid creation
+
+        let [rows, cols] = [20, 10]
+
+        let elem, tr, thead, tbody
+        thead = document.querySelector("thead")
+        tbody = document.querySelector("tbody")
+        // Col headers
+        // TODO generalise
+        for (let i=0; i<=cols; i++) {
+            elem = document.createElement("th")
+            if (i>0) {elem.textContent = " ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]}
+            thead.appendChild(elem)
+        }
+        // Row headers and data cells
+        for (let i=1; i<=rows; i++) {
+            tr = document.createElement("tr")
+            tbody.appendChild(tr)
+            elem=document.createElement("th")
+            elem.textContent+=i
+            tr.appendChild(elem)
+            for (let j=1; j<=cols; j++) {
+                elem=document.createElement("td")
+                elem.id = JSON.stringify(j-1,i-1)
+                elem.draggable=true
+                tr.appendChild(elem)
+            }
+        }
+        // Set up menu
+        const sidebar = document.getElementById("sidebar")
+        const menu_button = document.querySelector("thead").firstChild
+        menu_button.id = "menu-button"
+        menu_button.textContent = "☰"
+        menu_button.classList.add("buttonHover")
+        menu_button.onclick = function(event) {sidebar.classList.toggle("open")}
+
+        let filename;
+        const filename_element = document.getElementById("filename")
+        function save() {
+            if (filename === undefined) {
+                filename = prompt("Choose a filename (I will append '.ngnk'):") + ".ngnk"
+                // TODO can i press Esc? what happens then?
+            }
+            send_to_app("save", filename)
+            filename_element.textContent = filename
+            // TODO add 'fadeout background on save button' animation
+        }
+        function load() {
+            filename = load_button.files[0].name
+            send_to_app("load", filename)
+            filename_element.textContent = filename
+        }
+
+        const load_button = document.getElementById("file_chooser")
+        load_button.addEventListener('change', load)
+
+        const connection_dropzone = document.getElementById("connection-dropzone")
+        const connection_dropzone_box = document.getElementById("connection-dropzone-box")
+        connection_dropzone.ondragenter = function(event) {
+            connection_dropzone_box.classList.add("active")
+        }
+        /* "in the dragover event handler for the target container,
+           we call event.preventDefault(),
+           which enables it to receive drop event"
+           https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/drop_event */
+        connection_dropzone.ondragover = function(event) {event.preventDefault()}
+        connection_dropzone.ondragexit = function(event) {
+            connection_dropzone_box.classList.remove("active")
+        }
+        connection_dropzone.ondrop = function(event) {
+            event.stopPropagation();
+            event.preventDefault();
+            if (head_collision(selected_cell.dataset.head)) return;
+            connection_dropzone_box.classList.remove("active");
+            const name = event.dataTransfer.files[0].name;
+            send_to_app("addRWconnection", name)
+        }
+ 
+        const formula_bar = document.getElementById("formula-bar")
+        const data_cells = document.querySelectorAll("#grid td")
+        let send_to_app = false
+        let selected_cell
+
+        function change_selection_to(cell_node) {
+            if (selected_cell !== undefined) selected_cell.classList.remove("selected")
+            selected_cell = cell_node
+            selected_cell.classList.add("selected")
+            const is_overlap_cell = overlaps.includes(
+                                       coordToA1(JSON.parse(selected_cell.id)))
+            formula_bar.value = is_overlap_cell ? "Overlap - cannot edit cell"
+                                : selected_cell.dataset.formulaBar || ""
+            formula_bar.disabled = is_overlap_cell
+        }
+
+        // TODO order? call every time update UI?
+        grid.onpaste = function(event) {
+            send_to_app("paste", event.clipboardData.getData('text'))
+        }
+
+        grid.onmousedown = function(event) {
+            if (event.detail > 1) return;  // do not fire for double-clicks
+            if (formula_bar == document.activeElement) {
+                /* stop the mousedown from changing focus when editing a formula.
+                   but don't do it all the time,
+                   as we need it for dragging cells to move them. */
+                event.preventDefault()
+            } else if (event.target !== menu_button) {
+                change_selection_to(event.target)
+                if (send_to_app) send_to_app("show")
+            }
+        }
+        let prev_targeted_cell;
+        let fb_ref_idx;
+        grid.onclick = function(event) {
+            event.preventDefault()
+            event.stopPropagation()
+            if (formula_bar == document.activeElement) {
+
+                const target = event.target
+
+                // Reference queues for each data type (click to cycle)
+                const path = JSON.parse(target.dataset.path)
+                const head = target.dataset.head
+                const fbPath = {table: [ // user probably wants a specific col, so put that first
+                                    "(" + head + "`" + path[1] + ")",
+                                    head
+                                ],
+                                dict: [ // user probably wants whole dict, so put that first
+                                    head,
+                                    "(" + head + "`" + path[0] + ")"
+                                ],
+                                list: [head],
+                                simple: [head]}
+
+                // If user clicked on same cell again,
+                // replace the previously inserted ref with the next one in the cycle;
+                // otherwise, start a fresh cycle and insert where the selection is now.
+                const cellrefs = fbPath[target.dataset.headType]
+                let [s,e] = [formula_bar.selectionStart, formula_bar.selectionEnd]
+                if (event.target === prev_targeted_cell) {
+                    [s,e] = [s-cellrefs[fb_ref_idx].length, s]
+                    fb_ref_idx = (1+fb_ref_idx) % cellrefs.length
+                } else {
+                    fb_ref_idx = 0
+                }
+                const cellref = cellrefs[fb_ref_idx]
+                const v = formula_bar.value
+                formula_bar.value = v.slice(0,s) + cellref + v.slice(e,v.length)
+                const L = s + cellref.length
+                formula_bar.setSelectionRange(L,L)  // put cursor after inserted ref
+                prev_targeted_cell = target
+
+            }
+        }
+        grid.ondblclick = function(event) {formula_bar.focus()}
+        grid.ondragstart = function(event) {event.dataTransfer.dropEffect = "move"}
+        grid.ondragover = function(event) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move"
+        }
+        grid.ondragenter = function(event) {event.target.classList.add("target")}
+        grid.ondragleave = function(event) {event.target.classList.remove("target")}
+        grid.ondrop = function(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (head_collision(coordToA1(JSON.parse(event.target.id)))) return;
+            if (event.dataTransfer.files.length) {
+                const name = event.dataTransfer.files[0].name
+                change_selection_to(event.target)
+                send_to_app("addROconnection", name)
+            } else {
+                let moved_to_cell = coordToA1(JSON.parse(event.target.id))
+                send_to_app("move", moved_to_cell)  // head is still the old location
+                change_selection_to(event.target)
+            }
+        }
+        grid.oncopy = function(event) {
+            event.preventDefault();
+            const copytext = selected_cell.textContent
+	    navigator.clipboard.writeText(copytext).then(
+		() => {
+		    console.log("Wrote cell contents to clipboard.")
+		},
+		() => {
+		    alert("Copy to clipboard failed.")
+		} 
+	    )
+        }
+
+        // TODO should it be y, x naturally since have to describe HTML tables row-first?
+        const moveLeft = (x,y) => [Math.max(0, x-1), y]
+        const moveRight = (x,y) => [Math.min(cols-1,x+1), y]
+        const moveUp = (x,y) => [x, Math.max(0, y-1)]
+        const moveDown = (x,y) => [x, Math.min(rows-1,y+1)]
+        grid.onkeydown = function(event) {
+            if (["Enter", "Tab", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+                event.preventDefault();  // Tab will otherwise switch elements
+                let coords = JSON.parse(selected_cell.id)
+                coords = (event.key == "ArrowUp" || (event.key == "Enter" && event.shiftKey)) ? moveUp(...coords)
+                         : (event.key == "ArrowDown" || event.key == "Enter") ? moveDown(...coords)
+                         : (event.key == "ArrowLeft" || (event.key == "Tab" && event.shiftKey)) ? moveLeft(...coords)
+                         : (event.key == "ArrowRight" || event.key == "Tab") ? moveRight(...coords)
+                         : coords
+                change_selection_to(document.getElementById(JSON.stringify(coords)))
+                if (send_to_app) send_to_app("show")
+                return
+            }
+            if ("F2" == event.key) {formula_bar.focus(); return}
+            if ("F3" == event.key) {
+                // supress 'Find' browser dialog
+                event.preventDefault();
+                send_to_app("addname");
+                return
+            }
+            if ("Delete" == event.key) {
+                event.preventDefault();
+                send_to_app("deldef");
+                return
+            }
+            if (event.ctrlKey && event.key == "~") {
+                send_to_app("format","~")
+                return            
+            }
+            if (event.ctrlKey && event.key == "$") {
+                send_to_app("format","$")
+                return            
+            }
+            if (event.ctrlKey && event.key == "%") {
+                send_to_app("format","%")
+                return            
+            }
+            if (event.ctrlKey && event.key == "+") {
+                event.preventDefault();  // TODO reconsider key combo as conflicts with 'zoom in' in browser
+                send_to_app("insert")
+                return
+            }
+            if (event.ctrlKey && event.key == "-") {
+                event.preventDefault();  // TODO reconsider key combo as conflicts with 'zoom out' in browser
+                send_to_app("delete")
+                return
+            }
+            // https://regexr.com/
+            if ((!event.ctrlKey) && (/^[\w-"'\(\[{\/=*`]$/).test(event.key)) {
+                event.preventDefault();
+                formula_bar.value = event.key;
+                formula_bar.focus()
+            }
+        }
+        
+        formula_bar.onkeydown = function(event) {
+            prev_targeted_cell = undefined;
+            if (event.key == "Escape") {
+                formula_bar.value = selected_cell.dataset.formulaBar
+                grid.focus()
+                return
+            }
+            if (event.key == "Enter" || event.key == "Tab") {
+                event.preventDefault()
+                send_to_app("commit")  // TODO keep selection where it is if something failed
+                let coords = JSON.parse(selected_cell.id)
+                let move = (event.shiftKey) ? (event.key == "Enter" ? moveUp   : moveLeft)
+                                            : (event.key == "Enter" ? moveDown : moveRight);
+                coords = move(...coords);
+                change_selection_to(document.getElementById(JSON.stringify(coords)))
+                grid.focus() // TODO needed?
+                return
+            }
+        }
+
+        formula_bar.onfocus = function(event) {
+      	    let cell;
+      	    let d = all_dependencies[selected_cell.dataset.head] || [];
+      	    for (let cell of document.querySelectorAll("td")) {
+      	        if (d.includes(cell.dataset.head)) {
+      		          cell.classList.add("precedent")
+      	        }
+      	    }
+        }
+
+        formula_bar.onblur = function(event) {
+            prev_targeted_cell = undefined;
+            let cell;
+            for (let cell of document.querySelectorAll("td")) {
+                cell.classList.remove("precedent")
+            }
+        }
+
+        sheetsource.onblur = function(event) {send_to_app("show")}
+
+        function coordToA1(coord) {
+            // TODO generalise
+            return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[coord[0]] + (1+coord[1])
+        }
+
+        // Should this also take care of changing selection?
+        let all_dependencies;
+        let response;
+        let overlaps = [];
+        function update_ui() {
+            // Takes a standard JS object (already de-JSONed)
+
+            // Info notes for console
+            console.info(
+                `Names defined: ${response.namecount} (incl app: ${response.ncall})`,
+                "limit: 256"
+            )
+
+            // IO
+            let read_write_list_node = document.getElementById("read-write-list")
+            read_write_list_node.innerHTML = ""
+            let node
+            for (let m of Object.values(response.meta)) {
+                if (Object.keys(m).includes("path")) {
+                    node = document.createElement("li")
+                    node.textContent = m.path
+                    read_write_list_node.appendChild(node)
+                }
+            }
+            if (read_write_list_node.innerHTML == "") {
+                let node = document.createElement("p")
+                node.textContent = "None"
+                read_write_list_node.appendChild(node)
+            }
+
+            // Source
+            sheetsource.value = (typeof response.source === 'undefined'
+                                 ? ""
+                                 : response.source)
+
+            // Stats
+            document.getElementById("sum").textContent = response.stats[0]
+            document.getElementById("count").textContent = response.stats[1]
+            document.getElementById("avg").textContent = response.stats[2]
+
+            // Globals
+            all_dependencies = response.deps
+            overlaps = response.overlap
+
+            // Cells
+            const defaults = {fb:"", show:"", classes:["empty"], head:""}
+            const table_rows = document.querySelectorAll("#grid tbody tr")
+            for (let i = 0; i<table_rows.length; i++) {
+                const table_row_data_cells = table_rows[i].querySelectorAll("#grid td")
+                for (let j = 0; j < table_row_data_cells.length; j++) {
+                    const position = [j, i]
+                    let cell_loc = coordToA1(position)
+                    const cell_data = Object.assign({}, defaults,
+                                                    response.cells[cell_loc])
+                    const cell_node = table_row_data_cells[j]
+                    const meta = response.meta.hasOwnProperty(cell_data.head)
+                                 ? response.meta[cell_data.head]
+                                 : {}
+                    const number = meta.hasOwnProperty('number')
+                                   ? meta['number']
+                                   : {}
+                    const is_overlap = overlaps.includes(cell_loc)
+                    cell_node.textContent = is_overlap ? ""
+                                            : cell_data.classes.includes('number')
+                                              ? Intl.NumberFormat(undefined, number)
+                                                .format(cell_data.show)
+                                            : cell_data.show
+                    // TODO when do we see this, if not when it's selected?
+                    // why do we need to set it for everything?
+                    cell_node.dataset.formulaBar = cell_data.fb
+                    cell_node.dataset.head = cell_data.head || cell_loc
+                    cell_node.dataset.headType = cell_data.headType || "simple"
+                    cell_node.dataset.path = JSON.stringify(cell_data.path || [])
+                    cell_node.className = ""
+                    cell_node.id = JSON.stringify(position)
+                    cell_node.title = cell_node.textContent
+                    cell_node.classList.add(... is_overlap ? ["overlap"] : cell_data.classes)
+                }
+            }
+
+            change_selection_to(selected_cell)
+            
+        }
+
+        // Connection
+        function create_msg(action, payload) {
+            if (payload == undefined) payload = formula_bar.value
+            let msg = {
+                celltype: selected_cell.classList.item(0),
+                action: action, // TODO for now the first display class is the 'action' class
+                payload: payload,
+                coords: JSON.parse(selected_cell.id),
+                head: selected_cell.dataset.head,
+                source: sheetsource.value,
+                path: JSON.parse(selected_cell.dataset.path || "[]")
+            }
+            console.log("CLIENT|DECODE:", msg)            
+            msg = JSON.stringify(JSON.stringify(msg))  // useful to paste into mesh.ngnk
+            console.log("CLIENT|ENCODE:", msg)
+            return msg
+        }
+
+        // TODO why do we have send_to_app as a 'let' earlier on?
+        send_to_app = function(action,payload) {
+            socket.send("msg: " + create_msg(action,payload) + "\n")
+        }
+
+        const socket = new WebSocket('ws://' + window.location.hostname + ':8765')
+	      socket.onopen = function(_) {send_to_app("show")}
+        socket.onmessage = function(event) {
+            let d = event.data
+            console.log("SERVER|ENCODE", d)
+            d = JSON.parse(JSON.parse(d))
+            console.log("SERVER|DECODE", d)
+            response = d
+            update_ui()
+        };
+
+        // Initialise
+        change_selection_to(document.querySelectorAll("#grid td:first-of-type")[0])
+        grid.focus()
+
+    </script>
+    
+</body>
+
+</html>

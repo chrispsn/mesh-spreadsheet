@@ -1,0 +1,286 @@
+/
+Copyright 2024 Chris Pearson
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+\
+
+
+/ ######################
+/ ##  ngn/k unparser  ##
+/ ######################
+
+\d unparser
+
+(EMPTY;LIST):*'`p'(";;";"(1;1)")
+isSymLiteral:{(1=#x)&~^`A`s?@x}
+
+noun:{|/(1=*&(|x)~\:EMPTY
+         3<#x
+         LIST~**x
+         isSymLiteral x
+         ~^`I`C`F`S`i`c`f`o?@x)}
+composition:{(2<#x)&(')~*x}
+
+/ All fns below return a list of strings
+
+(rounds;squares):{(a;b):x; (,,a),y,,,b}@'("()";"[]")              / wraps
+(semicolons;newlines):{,/@[(#i)#,,,x;&~i:2!!-1+2*#y;:;y]}@'";\n"  / joins
+
+L:{$[noun x; f x; rounds f x]}
+R:{$[((x~*x)|~`w=@*x)&(EMPTY~x)|^`u`v?@x; f x; rounds f x]}
+M:{[modassgt;y]
+   $[composition y; rounds f y
+     modassgt&`u=@y; ,$y  / don't remove colon for modified assignments
+     `u=@y; ,-1_$y        / remove colon from monads if monadic call
+     |/(EMPTY~$[2<#y; y 2; +]; `v=@y; `w=@*y; noun y); f y
+     rounds f y]}
+
+advarg:{[adv;x]
+  left:$[composition x; rounds f x
+        (`u=@x)&(')~adv; ,-1_$x  / +:' is +' if used as monad
+        |/(`u=@x; `v=@x; `w=@*x; noun x); f x
+        rounds f x]
+  ,/(left;,$adv)}
+
+monad:{$[(::)~*|x; M[0;*x],"[]"
+         `w=@*x; advarg . x  / TODO what about (')', \\, etc?
+         EMPTY~* :/x; ,/(M[0]@*x;,," ";R[:/x])  / a [b] vs a[b] (progn vs call)
+         (&/~^`i`f?_@'x)|&/isSymLiteral'x; ,/(rounds;::)@'(M[0];R)@'x
+         ,/(M[0];R)@'x]}@
+
+mexpr:{f[*x],squares semicolons 1_f'x}
+infix:{nestedassgt:(`S=@*x 1)&(:)~*x
+       left:$[nestedassgt; mexpr; L]
+       ,/(left;M[1];R)@'x 1 0 2}
+verb:{$[x~*x; ~^`u`v`w?@x; (~EMPTY~x 1)&(4>#x)&o@*x]}
+
+f:{$[`S=@x; ,"."/$x
+     (~#x)|`A<@x; ,`k x
+     1=#x; ,`k@*x
+     EMPTY~*x; squares semicolons@ o'1_x
+     2=#x; monad x
+     LIST~*x; rounds semicolons@ o'1_x
+     composition x; ,/(M[0];o)@'1_x
+     verb x; infix x
+     mexpr x]}
+
+toplevel:{$[EMPTY~*x;newlines@ {$[(::)~x;();f x]}'1_x;f x]}
+
+/ 1 :'    disambiguate from 1: which is a verb
+/ 1 f'    1f otherwise read as single unit
+/ {x} -1  otherwise read as subtraction {x}-1
+addspaces:{
+  classes:"m n: a a"@"-.0:;A[a{"'{(*y;*|y;*x)}':x
+  notassgt:^("aa:";"an:")?classes
+  disamb:~^(" m";"n:";"aa";"na";"an";"nn")?1_'classes
+  disamb&:notassgt
+  disamb[&1&#x]:1
+  " "/,/'(&disamb)_x}
+
+/ Main entry point
+
+unparse: addspaces toplevel@
+
+
+/ #############
+/ ##  Tests  ##
+/ #############
+
+/ TODO: make this autodetect if being run as main (vs import), and enable if main
+test:{$[y~unparse `p x;;`0:"[FAIL] GOT ",(unparse `p x)," NEED ",y]}
+roundtrip:{$[x~unparse `p x;; `0:"[FAIL] GOT ",(unparse `p x)," NEED ",x]}
+
+/ uncomment following lines to disable tests:
+/ test:{y;}
+/ roundtrip:{}
+
+/ pure data
+roundtrip "12"
+roundtrip "1 2"
+roundtrip "0.0"
+roundtrip "hi"
+roundtrip "\"hi\""
+roundtrip "`hi"
+roundtrip "`hi`ho"
+roundtrip@,"+"
+roundtrip "+:"
+roundtrip "+/"
+roundtrip "+/'"
+roundtrip "(\"hi\";1)"
+roundtrip "::"
+roundtrip "A1"
+
+/ convenience literals
+test["0."] "0.0"
+test["1e-2"] "0.01"
+test["1f"] "1.0"
+test["1 1f"] "1.0 1.0"
+
+/ assignments
+roundtrip "a:1"
+roundtrip "a1:2"
+roundtrip "A1:2"
+roundtrip "(a;b):1 2"
+roundtrip "(a;(b;c)):(1;2 3)"
+roundtrip "a+:1"
+roundtrip "a[`b]:1"
+roundtrip "a[`b`c]:1"
+roundtrip "a[`b;`c`d]:1"
+
+/ applications
+roundtrip "+1"
+roundtrip "1+"
+roundtrip "(12)34"
+roundtrip "(1)2.0"
+roundtrip "(1.0)2"
+roundtrip "12 34"
+roundtrip "a,b"
+roundtrip "f x"
+roundtrip "1+2+3"
+roundtrip "(1+2)+3"
+test["1+(2+3)"] "1+2+3"
+roundtrip "1+(2+3)+4"
+roundtrip "(1+2)3"
+roundtrip "(1+2)'3"
+roundtrip "(+1)+1"
+roundtrip "+/1"
+roundtrip "+/\\"
+roundtrip "1+/"
+roundtrip "(1+)/"
+roundtrip "{x}"
+roundtrip "++:"
+roundtrip "++"
+roundtrip "+(+:)"
+roundtrip "+(+)"
+roundtrip "f[1;2]"
+test["+[1;2]"] "1+2"
+roundtrip "(+/1 2)3"
+roundtrip "((+/'1 2)3)4"
+roundtrip "a+'b"
+roundtrip "f[;]"
+test["+[a;]"] "a+"
+roundtrip "+[;a]"
+roundtrip "@[a;1;b]"
+roundtrip "@[a;1;:;b]"
+roundtrip "(1+2;3)"
+roundtrip "(1)1"
+roundtrip "(1 2)3"
+roundtrip "(`a)`a"
+roundtrip "(`a`b)`c"
+roundtrip "(`a)`b`c"
+roundtrip "(`a`b)`c`d"
+roundtrip "`a`b 1"
+roundtrip "+:/"
+roundtrip "1+:/"
+roundtrip "p+:/"
+roundtrip "$[a;1;2;3;4]"
+roundtrip "1 f'2"
+test["(++)2"] "(++:)2"  / TODO: is this right?
+roundtrip "f'[a;b;c]"
+roundtrip "1 :/"
+roundtrip "(1+2)#"
+roundtrip "(+:)#"
+roundtrip ":[;a]#"
+test["((1+2)+(3+4))#"] "((1+2)+3+4)#"
+test["(1 2)f'"] "1 2 f'"
+roundtrip "3/1 2 3"
+roundtrip "1:`hello"
+roundtrip "~(+/)"
+roundtrip "A1 2"
+roundtrip "a.b"
+roundtrip "a.b.c+1"
+roundtrip "{x}[]"
+roundtrip "()"
+roundtrip "$[a;[b;c];d]"
+roundtrip "a [b]"
+roundtrip "a [b;c]"
+roundtrip "{x} -1_\"hi\""
+/ roundtrip "\"hi\"-1" TODO fix
+/ Currently `p has the same output for "\\hello" and "hello\\".
+/ So the unparser can't process external/system calls properly. Disabled:
+/ roundtrip "\\ls"          / TODO external commands
+/ roundtrip "\\t:10 a+b"    / TODO timing
+
+/ multi-line
+test["a:1;"] "a:1\n"
+test["a:1;b:2"] "a:1\nb:2"
+roundtrip "a:1\nb:2"
+
+/ real-world examples
+roundtrip ",/(':'1+!#x)@\\:x"  / ColTim sublists
+roundtrip "x@*>#'x:^/^\\(,/,\\'(1_)\\)'(x;y)"  / longest common substring
+roundtrip "@[A1;&\";\"=A1;:;\",\"]"
+roundtrip ",\\'(1_)\\a"
+roundtrip "@[;`hello;@;1](1;2)"
+roundtrip "2*+/1+{x'y}/&'\"><\"=\\:"
+roundtrip "char:\"<>{}!\"\nsm:\"BETS \"!(\"T BE  \";\"  BE  \";\"T TTST\";\"TTTTTT\";\"T BE  \")\n\ng:{tokens:(#char)^char?x\n   states:\" \"sm[;]\\tokens   (+/a*0>':a:+\-/\"BE\"=\:states    / alt: -1+1^\"E B\"?states\n    +/\"T\"=&':states)}\n\n(11846;6285)~g input\n"
+roundtrip "(a`b)?`c`d"
+
+\d .
+
+/
+
+Turns the output of `p"some code" back into a ngn/k code string.
+
+Strategy:
+- Recursively process each syntax tree node. Figure out when to: 
+  - wrap a node in parens
+  - go infix or m-expr
+  - keep or remove a colon suffix.
+  Return a list of strings.
+- Insert any necessary disambiguation spaces between strings. Return a string.
+
+Needs to cover following grammar cases:
+v, n, vv, vn, nvn, nv, nn (any more?)
+
+Node               Syntax    Notes
+----               ------    -----
+1                  1         non-symbol atom
+1 2                1 2       non-symbol list
++                  +         verb
+,`a                a         name
+`a`b`c             a.b.c     name namespaced (all names are type `S in the AST)
+`a                 `a        symbol atom (type `s)
+,`a`b              `a`b      symbol list (type `A, length 1)
+(+:;1)             +1        monadic call
+(+;(+;1 2);3)      (1+2)+3   dyadic call
+(+;1;)             1+        projection
+(';+;+)            +         composition
+(5:;1;`a)          (1;a)     general list
+(:;(5:;`a;`b);..)  (a;b):..  destructure assignment
+(:;(`a;,`b);..)    a[`b]:..  nested assignment
+(';+)              +'        adverb
+(;`a;`b)           [a;b]     progn
+
+Tricky cases:
+a:[;1]        knows that : is a fn here, not assignment
+(+:)#         wrap LHS in parens to force noun
++(#:)         wrap RHS in parens to force noun
+(1)1          wrap LHS in parens to prevent becoming one list literal
+(1 2)3        ^
+(`a)`a        ^
+(`a`a)`a      ^
+
+TODO
+resolve inline TODOs
+call f 'triage'?
+can progn and mexpr logic be merged? progn first element `k EMPTY is blank anyway
+unicode char eg (κ):{y!x y}
+simplify list reprs eg general list (1;2;3) => 1 2 3
+should M[0] be a L call instead? (remove first param of M)
+is a better strat to always insert spaces between words, then strip where not necessary?
+need more complex parse impl?:
+- preserve whitespace
+- preserve ; vs \n as separator
+- comments ambiguous in parse tree eg (`p";hello/")~`p";/ hello"
+\

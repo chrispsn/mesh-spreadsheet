@@ -1,0 +1,1258 @@
+/
+Copyright 2024 Chris Pearson
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+\
+
+
+/ TODO output to a log or error area? Maybe console.error or console.log ?
+test:{$[x~y; ; `0:"[FAIL] GOT: ",`k[y],"\n       REQ: ",`k x]}
+
+\l unparser.ngnk
+
+
+/ Mesh app steps:
+/ 1. Receive a message ('action') from the client and decode/sanitise it.
+/    The message is a JSON string predefined in name 'msg'.
+/ 2. Execute action (change sheet source by amending parse tree, do IO, etc),
+/    usually triggered when the user commits a formula bar edit, drags data around, etc.
+/    This may require changing the order of definitions (sort by topological order).
+/ 3. Figure out what client UI should look like (grid cells, etc).
+/ 4. Respond to the client.
+
+
+/ We turn the client request 'msg' into a ngn/k dictionary.
+/ NB: since ngn/k doesn't have a separate boolean type,
+/     `j?'("true";"false") are (+:;::) to distinguish from 1 0.
+/ TODO fix hack for not knowing whether item in path is int or sym or string
+/   (maybe the server could tell the client what types they are (list,dict,table,etc)
+/    and the client could report that back in the message for use here?)
+jsonToAction: {@[;;]/[j] .+((`coords; `i$)
+                            (`celltype;`s$)
+                            (`action; `s$)
+                            (`head; `s$)
+                            (`s; `s$)
+                            (`path; ((#(j:`j?x)`path)#`i`s)$'))}
+test[x
+     jsonToAction`j x:`celltype`action`payload`coords`source`head`s`path!(`empty;`commit;"123";1 2;"";`;`;,3)]
+test[x
+     jsonToAction`j x:`celltype`action`payload`coords`source`head`s`path!(`amendTableCell;`commit;"123";1 2;"";`;`;3,`bee)]
+
+
+/ To be able to amend the sheet source,
+/ we need to turn it into a value this app can modify
+/ (a parse tree).
+
+/ Capture values of internal-only ngnk AST values.
+EMPTY:*`p";;"
+LIST: *`p"(1;`a)"
+
+/ Wrap `p so that one-line files (a:1)
+/ have the same parse tree structure
+/ as multi-line files (a:1;b:2).
+parse:{$[""~x; (EMPTY;::); ^";\n"?*|x; `p x,";"; `p x]}
+
+test[(EMPTY;::)] parse""
+test[(EMPTY;(:;,`a;1);::)] parse"a:1"
+test[(EMPTY;(:;,`a;1);(:;,`b;2);::)] parse"a:1;b:2"
+test[(EMPTY;(:;,`a;1);(:;,`b;2);::)] parse"a:1\nb:2\n"
+
+
+/ To modify the parse tree, we need some helper functions.
+
+isSymNode:{(1=#x)&~^`A`s?@x}
+test[isSymNode `p,"1"] 0
+test[isSymNode `p"abc"] 0
+test[isSymNode `p"`a"] 1
+test[isSymNode `p"`a`b"] 1
+
+
+isRefNode:{(`S=@x)|(1<#x)&`S=@*x}
+test[1] isRefNode`p"ab"
+test[1] isRefNode`p"a.b.c"
+test[1] isRefNode`p"a`b"
+test[1] isRefNode`p"a.b[`c;`d`e]"
+test[0] isRefNode`p"123"
+test[0] isRefNode`p"`a`b"
+test[0] isRefNode`p"+!/:[`c1`c2;(1 2;3 4)]"
+
+
+isEmptyListNode:{|/(~#x  / () ""
+                    ((#;0)~2#x)&3=#x
+                    ((!:;0)~x)&2=#x)}
+test[isEmptyListNode `p"()"] 1
+test[isEmptyListNode `p"!0"] 1
+test[isEmptyListNode `p"!0*0"] 0
+test[isEmptyListNode `p"0#`"] 1
+test[isEmptyListNode `p"\"\""] 1
+test[isEmptyListNode `p@,"1"] 0
+
+listNodeCount: {$[isEmptyListNode x; 0
+                  ((,:)~*x)&2=#x; 1
+                  LIST~*x; #1_x
+                  (`s=_@*x)&1=#x; #*x
+                  #x]}
+test[listNodeCount `p"()"] 0
+test[listNodeCount `p"\"\""] 0
+test[listNodeCount `p"!0"] 0
+test[listNodeCount `p",1"] 1
+test[listNodeCount `p"1 2"] 2
+test[listNodeCount `p"(x;y)"] 2
+test[listNodeCount `p",`a"] 1
+test[listNodeCount `p"`a`b"] 2
+
+isGeneralList:{(~x~*x)&LIST~*x}
+
+getListElementNodePath: {[listNode;idx]
+ $[((,:)~*listNode)&2=#listNode; ,1
+   isGeneralList listNode; ,1+idx
+   isSymNode listNode; 0,idx
+   ,idx]}
+test[,1] getListElementNodePath[`p",1";0]
+test[,1] getListElementNodePath[`p"1 2 3";1]
+test[0 1] getListElementNodePath[`p"`a`b";1]
+test[,2] getListElementNodePath[`p"(1;`a)";1]
+
+getModAssgtNodePath:{[pt;name;path]
+ *&(((),name;path)~/:pt@'1)&(:)~/:*'pt}
+test[2] getModAssgtNodePath[`p"a:1;a[`b]:2"; `a;`b]  / give name as sym atom...
+test[2] getModAssgtNodePath[`p"a:1;a[`b]:2";,`a;`b]  / ...or as sym list (like AST)
+
+amendListNode:{
+ / [listNode; newNode; idx]
+ / TODO merge with appendToListNode
+ isGeneral:{~&[(_@y)=@y                    / is RHS a list?
+               ~/_@'(x;y)]}                / are LHS and RHS different atom types?
+ 
+ / isEmptyListNode x; (,:;y)               / empty list - irrelevant for amends?
+ $[((,:)~*x)&2=#x; @[x;1;:;y]     
+   isGeneralList x; @[x;1+z;:;y]           / is LHS already a general list?
+   &/isSymNode'(x;y); ,@[*x;z;:;y]         / is LHS symbol atom/list and RHS symbol atom?
+   ~isGeneral[x;y]; @[x;z;:;y]
+   isSymNode x; @[(LIST,*x);1+z;:;y]
+   @[LIST,x;1+z;:;y]]}
+test[`p",1"] amendListNode[`p",2";1;0]
+test[`p"1 7 3"] amendListNode[`p"1 2 3";7;1]
+test[`p"(`a;7;\"cde\")"] amendListNode[`p"(`a;2;\"cde\")";7;1]
+test[`p"(`a;1 2;`c)"] amendListNode[`p"`a`b`c";1 2;1]
+test[`p"(\"apple\";4;\"hi\";2)"] amendListNode[`p"(\"apple\";4;3;2)";"hi";2]
+
+emptyListNodeOfType:{((!;0);"";(#;0;`);())3^`i`c`s?x}
+test[(!;0)] emptyListNodeOfType`i
+test[""] emptyListNodeOfType`c
+test[(#;0;`)] emptyListNodeOfType`s
+test[()] emptyListNodeOfType`C
+
+deleteListNodeItem:{
+ $[((,:)~*x)&2=#x; emptyListNodeOfType@@x 1
+   isGeneralList x; $[3=#x; (,:),(1_x)_y; x_1+y]
+   isSymNode x; ,(*x)_y
+   x_y]}
+test[`p"1 3"]        deleteListNodeItem[`p "1 2 3"; 1]
+test[`p"`a`c"]       deleteListNodeItem[`p "`a`b`c"; 1]
+test[`p"(1;`third)"] deleteListNodeItem[`p "(1;\"second\";`third)";1]
+test[`p",\"hi\""]    deleteListNodeItem[`p "(\"hi\";\"ho\")";1]
+
+
+/ Empty lists can be 0#` or !0 or ().  / TODO "" ?
+/ Single-item lists are ,0.
+/ Multiple-item lists are 1 2... or (5:; 1; 2).
+/ TODO distinguish between appending a name and appending a symbol?
+appendToListNode:{
+ 
+ isGeneral:{~&[(_@y)=@y                    / is RHS a list?
+               ~/_@'(x;y)]}                / are LHS and RHS different atom types?
+ 
+ $[isEmptyListNode x; (,:;y)               / empty list
+   ((,:)~*x)&2=#x; $[isSymNode x@:1; ,x,y  / length-1 list
+                     isGeneral[x;y]; (LIST,,x),,y
+                     (,x),,y]     
+   isGeneralList x; x,,y                   / is LHS already a general list?
+   &/isSymNode'(x;y); ,(*x),y              / is LHS symbol atom/list and RHS symbol atom?
+   ~isGeneral[x;y]; x,,y
+   isSymNode x; (LIST,*x),,y
+   (LIST,x),,y]}
+ 
+test[`p",1"]     appendToListNode[`p"()";1]
+test[`p",1"]     appendToListNode[`p"!0";1]
+test[`p"1 2"]    appendToListNode[`p",1";2]
+test[`p"1 2 3"]  appendToListNode[`p"1 2";`p@,"3"]
+test[`p",`a"]    appendToListNode[`p"0#`";`p"`a"]
+test[`p"`a`b"]   appendToListNode[`p"`a";`p"`b"]
+test[`p"`a`b"]   appendToListNode[`p",`a";`p"`b"]
+test[`p"`a`b`c"] appendToListNode[`p"`a`b";`p"`c"]
+test[`p",\"ab\""] appendToListNode[`p"!0";"ab"]
+test[`p"(\"a\";\"b\";\"cd\")"] appendToListNode[`p"\"ab\"";"cd"]
+test[`p"(\"ab\";\"cd\")"] appendToListNode[`p",\"ab\"";"cd"]
+test[`p"(1;`a)"]  appendToListNode[`p",1";`p"`a"]
+test[`p"(1;\"ab\";`c)"] appendToListNode[`p"(1;\"ab\")";`p"`c"]
+test[`p"(`a;`b;\"cd\")"] appendToListNode[`p"`a`b"; `p"\"cd\""]
+test[`p"(1;2;3+4)"] appendToListNode[`p"1 2"; `p"3+4"]
+
+
+/ Simple ways to add, amend and remove nodes of a parse tree:
+
+addDef:{[pt;name;value] ?[pt;-1+#pt; ,(:;(),name;value)]}
+test[parse"a:1;b:2"] addDef[parse"a:1";`b;2]
+test[parse"a:1;b:`hi"] addDef[parse"a:1";`b;`hi]
+
+/ TODO update to support dotted names
+findMetaIdx:{[pt;name]
+              fns:*'pt
+              names:{x 1}'pt
+              a:(names~\:(),name)&fns~\:(:)
+              $[1<+/a;a?1;0N]}
+test[1]  findMetaIdx[parse"a:1;a:2";`a]
+test[0N] findMetaIdx[parse"a:2";`a]
+
+findNameIdx:{[pt;name]
+             fns:*'pt
+             names:{x 1}'pt
+             a:(names~\:(),name)&fns~\:(:)
+             (-1+/a)+a?1}
+test[2] findNameIdx[parse"a:1;a:2";`a]
+
+findAllIdxs:{[pt;name]
+             amends:(:)~/:*'pt
+             names:(,name)~/:(),/:*'{x 1}'pt
+             &amends&names}
+test[1 3] findAllIdxs[parse"a:1;b:2;a[`c]:3";`a]
+
+meta:{[pt]
+      assgtnodes:pt@&{(3=#x)&(:)~*x}'pt
+      $[0=#assgtnodes; : (0#`)!0#,(0#`)!(); ]
+      assgtnodes:{`S=@'x@'1}#assgtnodes  /  skip modified assignments (calc cols)
+      metanodes:{@[&#x;*'(1<#:')#={x 1}'x;:;1]}#assgtnodes
+      metanodes:@[;2;. unparser.unparse@]'metanodes
+      / metanodes:{{{$[(3=#x)&(!)~*x;(,`number)~x 1;0]}x 2}'x}#metanodes
+      (names;values):1_+$[#metanodes; metanodes; 0#,(:;`a;1 2 3)]   / TODO ideally this would not be necessary
+      names:`s$"."/'$names
+      n:`s$"."/'$?assgtnodes@'1
+      / i found prototypes awkward to use here (prepending a dict with the structure we want),
+      / so specifying outdexing result (empty meta info) manually
+      / (i think it's an issue with appending a dict with non-conforming keys to a table)
+      {$[x;(0#`)!();y]}'[^names?n;n#names!values]}
+test[(0#`)!0#,(0#`)!()] meta parse ""
+test[`a!,(0#`)!()] meta parse "a:1"
+test[`a`b!((,`number)!,`a`b!1 2;(0#`)!())] meta parse "a:(,`number)!,`a`b!1 2;a:1;b:2"
+test[`a!,(0#`)!()] meta parse "a:1;a[`newcol]:2"
+
+
+/ indices of calculated columns, grouped by name.
+/ {name -> [{colName: idx} ...]}
+calcIdxs:{[pt]
+          DUMMY:(0#`)!0#,(0#`)!0#,!0
+          $[pt~parse ""; : 0#DUMMY; ]
+          isAssgtNode:(3=#'pt)&(:)~/:*'pt
+          assgtnodes:pt@&isAssgtNode
+          names:?`s$"."/'${`S=@'x}#assgtnodes@'1  /  skip modified assignments (calc cols)
+          isModAssgt:(`A=@'pt@'1)&isAssgtNode
+          result:{({x@1}'(x@&y)@'1)!'i@=`s$"."/'$*'{x 1}'x@i:&y}[pt;isModAssgt]
+          / Prep for pad for names with no calc cols.
+          / We would simply do result,padder, except that as at 2023-05-23,
+          / that merges the ranges of the two dicts into a table.
+          / So we need to turn the table back into a list of sparse dicts via #'
+          / (in other words, (name->keylist) #' name->(calcCol->idx).
+          / For that, we need to keep track of which dict has which keys,
+          / so we keep the result and dummy dicts separate rather than concatting earlier.
+          / There are also issues with ,/(dict;dict) atm, so we use {x,y}/ instead.
+          / A simple merge won't work either, ie:
+          / (!'result)#'(names!(#names)#,(0#`)!0#,!0),result
+          result:(result;c!(#c:names^!result)#,(0#`)!0#,!0)  
+          ({x,y}/!''result)#'{x,y}/result}
+test[(0#`)!0#,(0#`)!0#,!0] calcIdxs parse ""
+test[`a!,`b!2] calcIdxs parse "a:1;a[`b]:2"
+test[`a`c!(`b!2;(0#`)!0#,!0)] calcIdxs parse "a:1;a[`b]:2;c:d"
+test[`a`c!(`b!2;`e!4)] calcIdxs parse "a:1;a[`b]:2;c:d;c[`e]:3"
+
+
+calc:{[pt]
+      DUMMY:(,`)!,(0#`)!()
+      $[pt~parse ""; : 0#DUMMY; ]
+      assgtnodes:pt@&{(3=#x)&(:)~*x}'pt
+      names:`s$"."/'$?{`S=@'x}#assgtnodes@'1  /  skip modified assignments (calc cols)
+      mods:{`A=@'x@'1}#assgtnodes             /  only modified assignments (calc cols)
+      $[~#mods; : names#DUMMY; ]
+      / the bit before the domain take is there
+      / because the dict was becoming a table for some reason during the amend...
+      / ideally not necessary (but need to figure out the issue)
+      names#{$[#x;*x;x]}'{@[x; **y; ,; (:/y)!,z]}/[DUMMY] . +1_'mods}  
+test[`a`c!(`b!2;(0#`)!())] calc parse "a:1;a[`b]:2;c:d"
+
+
+amendDef:{[pt;name;nodeamender]
+ i:findNameIdx[pt;name]
+ / .[pt;(i;2);amendfn] is broken atm, so went for modified assgt instead
+ pt[i;2]:nodeamender pt[i;2]
+ pt}
+test[amendDef[parse"a:1;b:2 3 4;c:5";`b;1+]
+     amendDef[parse"a:1;b:2 3 4;c:5";`b;1+]]
+
+delDef:{[pt;name] pt_/|findAllIdxs[pt;name]}
+test[parse"a:1"] delDef[parse"a:1;b:2";`b]
+test[parse"a:1"] delDef[parse"a:1;b:2;b:3;b[`c]:4";`b]
+
+replaceDef:{[pt;name;value]
+           i:findNameIdx[pt;name]
+           @[pt;i;:;(:;(),name;value)]}
+test[parse"a:2+3;b:1"] replaceDef[parse"a:1;b:1";`a;(+;2;3)]
+
+evalListShallow:{$[LIST~*x; {$[(`s=_@*x)&1=#x;*x;x]}'1_x
+                   `S=@x; *x
+                   (,:)~*x; $[`S=@ :/x; :/x; 1_x]
+                   (!:;0)~x; !0
+                   (#;0)~2#x; 0#x 2
+                   `A=@x; *x
+                   x]}
+test[1 2 3]          evalListShallow `p"1 2 3"
+test[`abc]           evalListShallow `p"`abc"
+test[,`abc]          evalListShallow `p",`abc"
+test[`abc`def]       evalListShallow `p"`abc`def"
+test[!0]             evalListShallow `p"!0"
+test[0#`]            evalListShallow `p"0#`"
+test[((+;1;2);`sym)] evalListShallow `p"(1+2;`sym)"
+
+unevalListShallow:{$[1=#x; (,:; $[`S=@*x; x; *x])
+                     `S=@x; ,x
+                     `A=@x; (5:),{$[`S=@x;,x;x]}'x
+                     x]}
+test[`p ",2"]     unevalListShallow@,2
+test[`p "(`a;1)"] unevalListShallow (`a;1)
+test[`p ",`a"]    unevalListShallow @,`a
+test[`p "`a`b"]   unevalListShallow `a`b
+test[`p ",`a`b"]  unevalListShallow@,`a`b
+test[`p "(`G5;`a!`a`b;(\"str\";\"AUD\"))"
+     unevalListShallow(`G5;(!;`a;,`a`b);(5:;"str";"AUD"))]
+
+/ TODO haven't replaced the first leg with evalListShallow yet
+/ since need to handle symbols properly
+evalDictShallow:{keys:{$[3=#x; 0#`; 2=#x; :/x; `A=@x; *x; x]}x 1  
+                 values:evalListShallow x 2
+                 keys!values}
+
+amendMeta:{[pt;name;dictnode]
+           name,:()
+           i:findMetaIdx[pt;name]
+           metaDefn:$[^i; (:;name;(!;(#;0;`);())); pt i]
+           pt_:i
+           new:{x,y}/evalDictShallow'(metaDefn 2;dictnode)
+           metaDefn[2]:(!),(`p@`k@;unevalListShallow)@'(!:;.:)@\:new
+           ?[pt;findNameIdx[pt;name];,metaDefn]}
+test[parse"a:(,`b)!,2;a:123"] amendMeta[parse"a:123";`a;`p"(,`b)!,2"]
+test[parse"a:`a`b!1 2;a:3"] amendMeta[parse"a:(,`a)!1;a:3";`a;`p"(,`b)!,2"]
+test[parse"a:`a`b`c!4 2 3;a:3"] amendMeta[parse"a:`a`b!1 2;a:3";`a;`p"`a`c!4 3"]
+test[parse "B2:`path`io`format`number!(\"test.json\";1:;`j;`style`currency!(\"currency\";\"AUD\")); B2:`j?1:\"test.json\""
+     amendMeta[parse "B2:`path`io`format!(\"test.json\";1:;`j); B2:`j?1:\"test.json\""
+               `B2
+               `p"(,`number)!,`style`currency!(\"currency\";\"AUD\")"]]
+
+
+deleteMetaKeys:{[pt;name;keys]
+                i:findMetaIdx[pt;name]
+                $[^i; : pt; ]
+                metaDefn:pt i
+                pt_:i
+                new:(evalDictShallow metaDefn 2)_/keys
+                $[~#new; : pt; ]
+                new:(!),(`p@`k@;unevalListShallow)@'(!:;.:)@\:new
+                ?[pt;i;,@[metaDefn;2;:;new]]}
+test[parse"a:7"] deleteMetaKeys[parse"a:7";`a;`a`c]
+test[parse"a:7"] deleteMetaKeys[parse"a:(0#`)!!0;a:7";`a;`a`c]
+test[parse"a:(,`b)!,2;a:7"] deleteMetaKeys[parse"a:`a`b`c!1 2 3;a:7";`a;`a`c]
+
+
+delMeta:{[pt;name] pt_findMetaIdx[pt;name]}
+test[parse"a:123"; delMeta[parse"a:123"; `a]]
+
+/ TODO v inefficient - find better way?
+namePaths:{(isRefNode'x./:)#(^:)_'+{$[isRefNode x; !0; (1<#x)&`A=@x; (,&#'*'x),,'/x@\:!0|/#'x:o'x; !0]}x}
+
+
+changeName:{[pt;oldname;newname]
+ oldname,:()
+ i:namePaths pt
+ i@:&oldname~/:pt./:i
+ pt.[;;:;newname,()]/i}
+test[parse"new:1;b:new+1;c:`b`a"
+     changeName[parse"a:1;b:a+1;c:`b`a";`a;`new]]
+test[parse"B3:1;D3:`B2;E3:`B2`C2"
+     changeName[parse"B2:1;D3:`B2;E3:`B2`C2";`B2;`B3]]
+test[parse"n:(,`loc)!,`A1;n:123"] changeName[parse"A1:(,`loc)!,`A1;A1:123";`A1;`n]
+test[parse"n:`loc`path!`A1`aa;n:123"] changeName[parse"A1:`loc`path!`A1`aa;A1:123";`A1;`n]
+
+
+/ TODO do this via addDef?
+addTable:{[pt;name] ?[pt; -1+#pt; ,(:;(),name;((),`maketable; (#;0;`); ()))]}
+test[parse"a:1;t:maketable[0#`;()]"] addTable[parse"a:1";`t]
+
+insertValue:{[pt;name;value]
+             amendDef[pt;name;appendToListNode[;value]]}
+test[parse"a:1;L:1 2 3"] insertValue[parse"a:1;L:1 2";`L;3]
+test[parse"a:1;L:(1;2;3+4)"] insertValue[parse"a:1;L:1 2";`L;`p"3+4"]
+
+/ TODO split out 'search for node' function from
+/ 'amend node' function? make a partial function...
+
+/ TODO generalise to 'insert' rather than assuming 'append'
+/ TODO combine this fn with a way to set up the created row with a val in the new row
+/ (like data entry below the table)
+/ TODO make it add nulls appropriate for the column
+appendRow:{[hardcodetablenode]
+           rowsnode: hardcodetablenode 2
+           colcount: listNodeCount hardcodetablenode 1 / assumes hardcoded as symlist
+           rowcount: listNodeCount rowsnode
+           newrownode: $[~colcount; ()
+                         1=colcount; (,:;0N)
+                         colcount#0N]
+           hardcodetablenode[2]: appendToListNode[rowsnode; newrownode]
+           hardcodetablenode}
+           
+/ TODO will prototypes be necessary? i guess () is kind of what we want since it's 2D
+/ but it won't have colnames etc (if that matters)
+/ TODO insert a 'zero' appropriate for each col, rather than a number null?
+/ 0>1 rows, zero cols
+test[`p"maketable[0#`;,()]"] appendRow `p"maketable[0#`;()]"
+/ 1>2 rows, zero cols
+test[`p"maketable[0#`;(();())]"] appendRow `p"maketable[0#`;,()]"
+/ 0>1 rows, one col
+test[`p"maketable[,`col;,,0N]"] appendRow `p"maketable[,`col;()]"
+/ 1>2 rows, one col
+test[`p"maketable[,`col;(,1;,0N)]"] appendRow `p"maketable[,`col;,,1]"
+/ 0>1 rows, two cols
+test[`p"maketable[`col1`col2;,0N 0N]"] appendRow `p"maketable[`col1`col2;()]"
+/ 1>2 rows, two cols
+test[`p"maketable[`col1`col2;(1 2;0N 0N)]"] appendRow`p"maketable[`col1`col2;,1 2]"
+
+amendTableRow:{[hardcodetablenode;newval;rowidx;colidx]
+               rowsnode: hardcodetablenode[2]
+               rownodepath: getListElementNodePath[rowsnode; rowidx]
+               r: rowsnode . rownodepath
+               .[hardcodetablenode; 2,rownodepath; :; amendListNode[r; newval; colidx]]}
+test[`p"maketable[`col1`col2;,1 3]"] amendTableRow[`p"maketable[`col1`col2;,1 2]";3;0;1]
+test[`p"maketable[`col1`col2;(1 2;3 0N)]"] amendTableRow[`p"maketable[`col1`col2;(1 2;0N 0N)]";3;1;0]
+
+/ TODO generalise to 'insert' rather than assuming 'append'
+/ TODO should we allow this to have colnames defined in a separate cell?
+/ (ie at runtime rather than parse time)?
+addColumn:{[hardcodetablenode;colname]
+           colnamesnode: hardcodetablenode 1
+           rowvalsnode: hardcodetablenode 2
+           hardcodetablenode[1]:appendToListNode[colnamesnode;colname]
+           rowindices: $[isEmptyListNode rowvalsnode; !0
+                         (2=#rowvalsnode)&(,:)~*rowvalsnode; 1
+                         1_!#rowvalsnode]
+           hardcodetablenode[2]: @[rowvalsnode;rowindices;appendToListNode;0N]
+           hardcodetablenode}
+test[`p"maketable[,`newcol;()]"] addColumn[`p"maketable[0#`;()]";`newcol]
+test[`p"maketable[`col`newcol;()]"] addColumn[`p"maketable[,`col;()]";`newcol]
+test[`p"maketable[`a`b`c;()]"] addColumn[`p"maketable[`a`b;()]";`c]
+test[`p"maketable[`a`b;()]"] addColumn[`p"maketable[,`a;()]";`b]
+test[`p"maketable[`a`b;,1 0N]"] addColumn[`p"maketable[,`a;,,1]";`b]
+test[`p"maketable[`a`b;(1 0N;2 0N)]"] addColumn[`p"maketable[,`a;(,1;,2)]";`b]
+test[`p"maketable[`a`b`c;(1 2 0N;3 4 0N)]"] addColumn[`p"maketable[`a`b;(1 2;3 4)]";`c]
+
+
+/ Return an AST representation of what the user entered.
+/ Formula bar input can be literals or formulas (leading =).
+/ Formulas are stripped of the leading = and parsed verbatim.
+/ If there is no = prefix, we try to interpret what the user meant,
+/ but default to treating it as a string.
+/ TODO should this also be smart depending on the type of the cell entered in?
+/ For example, should table headers always produce a symbol?
+
+parseFB:{$["="=*x; `p 1_x; `s=@p:`p"",x; $p; p]}  / old impl
+parseFB:{$["="=*x; `p 1_x
+           ("",x)~$`I$x; `I$x
+           ("",x)~$`F$x; `F$x
+           (("",-1_x)~$`I$-1_x)&"f"= :/x; `F$x
+           (("",-1_x)~$`I$-1_x)&"."= :/x; `F$x
+           "`"=*x; `p x  / TODO fix for bad input that happens to start with backtick
+           x]}
+test[1] parseFB"1"
+test[1.0] parseFB"1f"
+test[1.0] parseFB"1.0"
+test[1.0] parseFB"1."
+test[123] parseFB"123"
+test[(+;1;2)] parseFB"=1+2"
+test["hello world"] parseFB"hello world"
+test["1\n2\n"] parseFB"1\n2\n"
+test[`c] parseFB"`c"
+test[`c] parseFB"=`c"
+test[,`c] parseFB"=c"
+test[((\;"\t");(0::;,`B2))] parseFB"=\"\\t\"\\0:B2"
+/ 123~parseFB"=123"  / TODO
+
+
+/ What happens when an action is requested varies with
+/ the type of the cell selected in the client:
+/ is it empty, name, data (atom, list, dict, table), etc.
+/ Paste will create a once-cell string if there are no newlines in the string,
+/ or a list of strings if there is a newline. TODO detect newline type?
+/ TODO express as table: dims being actiontype and celltype?
+/ should 'amendList' even exist? just make it 'commit' and dispatch based on what we know of the AST?
+
+changeAST:{[x;pt]
+           (a;p;t;i): x`action`payload`celltype`path
+           $[`add=t; insertValue[pt; x`head; parseFB p]
+             `addCol=t; amendDef[pt; x`head; addColumn[; *parseFB p]]
+             `addRow=t; amendDef[pt; x`head; appendRow]
+             `amendList=t; .[pt; findNameIdx[pt;x`head],2  / TODO update once 3arg . is fixed
+                             : ; amendListNode[pt . findNameIdx[pt;x`head],2; parseFB p; *i]]
+             `empty=t; addDef[pt; x`head; parseFB p]
+             $[^i:getModAssgtNodePath[pt; x`head; :/x`path]
+               replaceDef[pt; x`head; parseFB p]
+               .[pt; (i;2); :; parseFB p]]]}
+
+test[parse"B2:+`a`b!(1 2;3 4);B2[`cde]:2+B2`a"
+     changeAST[`action`payload`celltype`path`head!("commit"; "=2+B2`a"; `number; 0,`cde; `B2)
+               parse "B2:+`a`b!(1 2;3 4)\nB2[`cde]:1+B2`a\n"]]
+
+
+amendAtDepth:{[x;pathlist;v]
+              ns:x :': x@\pathlist
+              {@[y;z;:;x]}/[v;|ns;|pathlist]}
+
+readFile:{[path;io;decode]
+           data:(.($io),":")path  / we want read, not write (eg 0::, not 0:)
+           (. unparser.unparse decode)data}
+
+writeFile:{[path;io;encode;data]
+           io[path;(. unparser.unparse encode)data]}
+
+fileExtension:{`s$|(x?".")#x:|x}
+test[`json]fileExtension"someFile.json"
+
+/ Outputs a parse tree for each property.
+/ We return a parse tree instead of the raw function, so that
+/ the user can specify custom (de-)serialiser functions
+/ via meta info (CSVs, other formats).
+serialiser:{known:`dummy`json`ngnk`ngnkdata!(`io`encode`decode!(0:;     `;     `)
+                                             `io`encode`decode!(1:;`"`j@";`"`j?")
+                                             `io`encode`decode!(1:;`"`k@";`"`k?")
+                                             `io`encode`decode!(1:;`" `@";`" `?"))
+            x:(0:;`"(::)@";`"(::)@")^'known x
+            x:@[x;`encode;`p@$:]
+              @[x;`decode;`p@$:]}
+test[`io`encode`decode!(1:;`p  "`j@";`p  "`j?")] serialiser`json
+test[`io`encode`decode!(0:;`p"(::)@";`p"(::)@")] serialiser`dummy
+
+addROconnection:{[x;pt] 
+                 name:x`payload
+                 (io;decode;encode):(serialiser fileExtension name)`io`decode`encode
+                 $[decode~(::)
+                   addDef[pt; x`head; (.$[io],":";name)]
+                   addDef[pt; x`head; (-1_decode),,(.$[io],":"; name)]]}
+test[parse"dummy:1;A1:`j?1:\"test.json\""
+     addROconnection[`head`payload!(`A1;"test.json");parse"dummy:1"]]
+
+addRWconnection:{[x;pt] 
+                 name:x`payload
+                 (io;decode;encode):(serialiser fileExtension name)`io`decode`encode
+                 pt:addDef[pt; x`head; (!; (,:; `path); (,:; name))]
+                 $[decode~(::)
+                   addDef[pt; x`head; (.$[io],":"; name)]
+                   addDef[pt; x`head; (-1_decode),,(.$[io],":"; name)]]}
+test[parse"dummy:1;A1:(,`path)!,\"test.json\";A1:`j?1:\"test.json\""
+     addRWconnection[`head`payload!(`A1;"test.json");parse"dummy:1"]]
+
+commit:{[x;pt]
+
+        / Early exit: Is it a calc col header?
+        $[`colheader=x`celltype
+          $[~^i:calcIdxs[pt][x`head][:/x`path]; : pt_i; ]; ]
+
+        / Early exit: if no (path key in) meta node, do an AST edit
+        $[^(!meta:meta[pt][x`head])?`path; : changeAST[x;pt]; ]
+
+        / If explicit decode and encode functions both exist, use them;
+        / otherwise, try to infer them from the file suffix.
+        s:$[|/^(!meta)?`decode`encode`io; (0#`)!(); `decode`encode`io#meta]
+        s:(serialiser fileExtension meta`path),s
+        data:readFile[meta`path;s`io;s`decode]
+        / TODO flesh out: dicts, etc.
+        data:$[~^`add`addRow?x`celltype; amendAtDepth[data,,*0#data
+                                                      x`path
+                                                      parseFB x`payload]
+               `addCol=x`celltype; data,\:(,`s$parseFB x`payload)!,0N
+               amendAtDepth[data; x`path; parseFB x`payload]]
+        writeFile[meta`path;s`io;s`encode;data]
+        pt}
+
+
+/ TODO this only covers external files atm. need to add code for AST edit
+/ TODO find nicer way to share code with 'commit'?
+/ TODO fix workaround for splice not being implemented on tables
+insert:{[x;pt]
+        meta:meta[pt][x`head]
+        s:$[|/^(!meta)?`decode`encode`io; (0#`)!(); `decode`encode`io#meta]
+        s:(serialiser fileExtension meta`path),s
+        data:readFile[meta`path; s`io; s`decode]
+        / TODO flesh out: dicts, tables, etc.
+        $[`amendList=x`celltype;      data:?[data;*x`path;,*0#data]; ]
+        $[`amendTableCell=x`celltype; data@:<(!#data),-1+*x`path; ]
+        writeFile[meta`path;s`io;s`encode;data]
+        pt}
+/ TODO merge with insert? most code is the same
+/ TODO fix workaround for 'delete row' not being implemented on tables
+delete:{[x;pt]
+
+        / Early exit: Is it a calc col header?
+        $[`colheader=x`celltype
+          $[~^i:calcIdxs[pt][x`head][:/x`path]; : pt_i; ];]
+
+        / Early exit: is there a (path key in) meta node? If so, AST edit.
+        / TODO cover cases for dicts, tables, etc
+        meta:meta[pt]x`head
+        $[(`amendList=x`celltype)&^(!meta)?`path
+          : amendDef[pt; x`head; deleteListNodeItem[;*x`path]]; ]
+
+        / Otherwise, do different things depending on whether the
+        / table is a result/in-sheet, or external:
+        s:$[|/^(!meta)?`decode`encode`io; (0#`)!(); `decode`encode`io#meta]
+        s:(serialiser fileExtension meta`path),s
+        data:readFile[meta`path;s`io;s`decode]
+        / TODO flesh out: dicts, tables, etc.
+        data:$[`amendList=x`celltype;      data_*x`path
+               `amendTableCell=x`celltype; data(!#data)_*x`path
+               `colheader=x`celltype;      data_\: :/x`path
+               data]
+        writeFile[meta`path;s`io;s`encode;data]
+        pt}
+test[parse "B2:1 2"] delete[`celltype`head`path!(`amendList;`B2;,2)
+                             parse "B2:1 2 3\n"] 
+test[parse "B2:`a`c"] delete[`celltype`head`path!(`amendList;`B2;,1)
+                             parse "B2:`a`b`c\n"] 
+
+format:{[x;pt]
+        p:x`payload
+        / TODO improve. maybe make a dict not a $[;;]
+        $[p~,"$"; amendMeta[pt;x`head
+                   `p"(,`number)!,`style`currency!(\"currency\";\"AUD\")"]
+          p~,"%"; amendMeta[pt;x`head
+                   `p"(,`number)!,(,`style)!,\"percent\""]
+          p~,"~"; deleteMetaKeys[pt;x`head;,`number]
+          pt]}
+
+move:{[pt;name;newloc]
+      / early exits
+      $[^metaIdx:findMetaIdx[pt;name];  : changeName[pt;name;newloc]
+        [s:{$[(,:)~*x;*1_x;0=#x;x;*x]}
+        ^((),s pt[metaIdx].2 1)?`loc];     : changeName[pt;name;newloc]; ]
+      amendMeta[pt;name;(!;(,:;,`loc);(,:;,newloc))]}
+test[parse"A2:123"] move[parse"A1:123";`A1;`A2]
+test[parse"A2:(,`path)!,456;A2:123"] move[parse"A1:(,`path)!,456;A1:123";`A1;`A2]
+test[parse"name:(,`loc)!,`A2;name:123"] move[parse"name:(,`loc)!,`A1;name:123";`name;`A2]
+test[parse"name:`path`loc!`aa`A2;name:123"] move[parse"name:`path`loc!`aa`A1;name:123";`name;`A2]
+
+
+paste:{[x;pt]
+ (h;t;p):x`head`celltype`payload
+ $[`empty=t
+   addDef[pt;h;{$[1<#x;LIST,x;x]}@"\n"\p]
+   changeDef[pt;h;{$[1<#x;LIST,x;x]}@"`n"\p]]}
+
+
+/ TODO change everything to [x;pt] signature
+/ and do decomposition in the consumer functions?
+/ might be cleaner?
+triage:{(a;p;s;t;i;h): x`action`payload`source`celltype`path`head
+        / s: {$[x~""; "maketable:!/:"; x]} s  / source default
+        pt: parse s
+        $[`show=a; pt  / could just leave to fall through to end, but v common
+          `commit=a; $[`name=t; changeName[pt; h; `s$p]
+                       commit[x;pt]]
+          `clear=a; parse ""
+          `save=a; [p 1: s; pt]
+          `load=a; [s:1:p; parse s]
+          `move=a; move[pt;h;`s$p]
+          `insert=a; insert[x;pt]
+          `delete=a; delete[x;pt]
+          `format=a; format[x;pt]
+          `paste=a; paste[x;pt]
+          `addname=a; addName[pt;h;h]
+          `deldef=a; delDef[pt;h]
+          `addROconnection=a; addROconnection[x;pt]
+          `addRWconnection=a; addRWconnection[x;pt]
+          pt]}
+
+/ Simple defn into empty cell
+test[parse ";C4:12"
+     triage ![`action`payload`coords`source`celltype`head`path
+              (`commit;"12";2 3;,"\n";`empty;`C4;!0)]]
+
+/ Int list literal into empty cell
+test[parse ";C4:(\"12\";\"34\")"
+     triage ![`action`payload`coords`source`celltype`head`path
+              (`paste;"12\n34";2 3;,"\n";`empty;`C4;!0)]]
+
+/ Append to int list
+test[parse "C1:1 2 3"
+     triage ![`action`payload`coords`source`celltype`head`path
+              (`commit;,"3";2 0;"C1:1 2\n";`add;`C1;,2)]]
+
+/ Add calc defn into empty cell
+test[parse "C1:(1;2;3+4)"
+     triage ![`action`payload`coords`source`celltype`head`path
+              (`commit;"=3+4";2 0;"C1:1 2\n";`add;`C1;,2)]]
+
+/ Amend list to add calculation into middle
+test[parse "C1:(1;3+4;3)"
+     triage ![`action`payload`coords`source`celltype`head`path
+              (`commit;"=3+4";2 0;"C1:1 2 3\n";`amendList;`C1;,1)]]
+
+/ Complicated defn into empty cell (table); no existing cells
+test[parse "C1:maketable[`a`b;(1 3;2 4)]"
+     triage ![`action`payload`coords`source`celltype`head`path
+              (`commit;"=maketable[`a`b;(1 3;2 4)]";2 0;"";`empty;`C1;,1)]]
+
+
+/ Once the sheet parse tree is modified,
+/ we sort it by cell resolution order (topological sort).
+/ For that, we need to know when names are used, either:
+/ - by themselves: a, a.b
+/ - via indexing: a b, a.b c, a.b[c;d]
+/ - TODO what else? finds? filters?
+/ So each element is either type `S (clean) or `A (nested).
+
+/ TODO better way to handle 'no refs' case?
+onlyRefs:(~#:')_?{$[isRefNode x; ,x; x~*x; ,0#`; (0#`),/o'x]}@
+test[(,`a;,`b;`c`d;(,`e;`f))] onlyRefs `p"a:`d;b:a+b*2;c.d:1+e[`f]"
+test[0#,0#`] onlyRefs `p"1+2+`a"
+
+/ Strip the ends of each ref in deps until they can all be found in names.
+broadenDeps:{[names;deps]
+              a:?@[deps;&~+/names~/:\:deps;-1_]
+              {$[(1=#x)&`A=@x;*x;x]}'a}  / where enlisted symbol list, unbox
+test[(,`a;,`b;(,`c;`d))
+     broadenDeps[(,`a;,`b;(,`c;`d))
+                 (,`a;(,`b;,`c);(,`c;`d))]]
+
+/ TODO cycle detection
+/ TODO keep in mind table col can be accessed via t[`c] or t[;`c]
+/ TODO catch *top-level* names that don't exist (eg if a cell refers to b but b doesn't exist).
+/ TODO break apart multi-indexing (eg t`a`b) into separate refs
+
+fixOrder:{[pt]
+          
+          pt:pt_/(-1+#pt;0)                   / remove the known non-assgt nodes
+          refs:pt@'1                          / get LHS of each assignment
+          deps:onlyRefs'pt@'2                 / get list of dependencies for each assignment
+          
+          / Regular assignment looks like (:; ,`a; 1)                            (x 1 is `S)
+          / Modified assignment looks like (:; (,`a; `b); 2). [sym] isn't boxed! (x 1 is `A)
+          modassgts:`A=@'refs
+          
+          / For non-modified assignments:
+          / (a) any dependency on the *top-level* of t should come after ALL mod assgts to t.
+          /     So we add all mod assgts to that ref's deps list.
+          /     For example: t:1; t[`a]:2; u:t
+          / (b) refs that have dependencies on *calc cols* of t can resolve as normal,
+          /     so that they can be used in defining further calc cols.
+          /     For example: t:1; t[`a]:1 2; u:+/t`a; t[`b]:u+1
+          / (b) requires nothing, but we do (a) below:
+
+          / For group to not error, we need a consistent rank (list of sym lists).
+          / Mixed rank results from using bools#'ref for this purpose, since a ref can be either:
+          /   `sym`list, in which case 0# results in 0#`
+          /   (`sym`list; `abc), in which case 1# results in ,`sym`list.
+          modassgttops:{$[#x;*x;x]}'modassgts#'refs
+          allmodassgtsforeachname:refs((,,`)!,!0),=modassgttops
+          / When indexing into the group, keep only the top-level deps:
+          deps:deps,',/'allmodassgtsforeachname{`S=@x}#''deps  
+          
+          / For modified assignments, make sure they come AFTER the top-level name creation.
+          / This means t[`a]: ... should have ,`t in its dependencies.
+          deps:deps,'(~#:')_','modassgttops  / Strip empty sym lists (not strictly necessary)
+          
+          / Sometimes a ref will depend on a calc col that was pre-existing in the table
+          / (for example, c:a`b, but a[`b]: is not defined because it was already in a).
+          / Assume these are a pre-existing field, and de-nest them by one level.
+          / Keep de-nesting names until all names are found in the refs list.
+          deps:broadenDeps[refs]/'deps       
+
+          / Finally, reorder the parse tree nodes so that all deps are always satisfied...
+          m:{0|/'(!0),/:x~/:\:y}[refs]'deps   / ~/:\: as 'find' couldn't handle this case...
+          n:#deps
+          pt@:>+/n{@[y;*<y|+/'x*\:~y;:;1]}[m]\&n
+
+          / ...and reconstruct the parse tree.
+          EMPTY,pt,(::)}
+
+/ Cells without dependencies stay in the same order:
+test[parse"a:1;b:2"] fixOrder parse"a:1;b:2"
+
+/ Cells with dependencies come after that dependency is defined:
+test[parse"a:1;b:!a;c:+/b"] fixOrder parse"b:!a;c:+/b;a:1"
+
+/ Multiple assignments to same name don't change order:
+/ TODO figure out why test is failing
+/ test[parse"a:1;a,:2;b:a"] fixOrder parse"b:a;a,:2;a:1"
+
+/ Cell defn can use meta info:
+/ TODO disabled as may not offer this...
+/ TODO figure out why fails when i use (cell`format)? ...
+/ test[parse"a:(,`path)!,\"abcd\";a:a`path"] fixOrder parse"a:(,`path)!,\"abcd\";a:a`path"
+
+/ Modified assignments come after the top-level name is defined:
+test[parse"t:1;t[`a]:2"] fixOrder parse "t[`a]:2;t:1"
+
+/ Nested references need to be resolved in the right order.
+/ Note t`a is assumed to already be in t (there is no t[`a]: ..).
+test[parse"t:1;a:+/t`a;t[`b]:a+2;c:+/t"] fixOrder parse "t[`b]:a+2;a:+/t`a;t:1;c:+/t"
+
+/ Outside cells can influence calc col defn order:
+test[parse"t:1;t[`a]:2;b:t"] fixOrder parse "t[`a]:2;b:t;t:1"
+test[parse"a:1;a[`b]:1 2;sum:+/a`b;a[`c]:1+sum"] fixOrder parse"a[`c]:1+sum;a[`b]:1 2;sum:+/a`b;a:1"
+
+/ 'Whole table' refs should happen after all calced cols for that table are defined:
+/ (consequence: if t`col depends on a cell that does +/t, it's a circular ref)
+test[parse"t:1;t[`a]:2;c:+/t"] fixOrder parse "c:+/t;t[`a]:2;t:1"
+
+/ Assume missing nested references were defined in the top-level defn
+/ (this test also has mutually dependent structures):
+test[parse"a:1;b:2;a[`x]:b`n;b[`y]:a`x;a[`z]:b`y;b[`f]:+/a;g:+/b"
+     fixOrder parse "g:+/b;b[`f]:+/a;a[`z]:b`y;b[`y]:a`x;a[`x]:b`n;a:1;b:2"]
+
+/ TODO figure out why this test is failing:
+/ test[parse"t:123;t[`b]:1+t`a;t`c:1 2 3;total:+/t`c;t[`d]:total*t`c;e:+/t"
+/   fixOrder parse "t:123;t[`b]:1+t`a;t`c:1 2 3;total:+/t`c;t[`d]:total*t`c;e:+/t"]
+
+
+/ Once we're happy with the definition resolution order,
+/ we unparse the parse tree back into a string,
+/ eval it, and update the grid display.
+
+/ Figuring out what data belongs in each cell is a good deal of work.
+
+/ Take in the parse tree *value* node, get back a dict of a1 -> cell info.
+
+/ Note symbol atoms DO NOT show their backtick prefix.
+cellShow:{$[(1=#x)&`A=@x; ,/`k'x
+            `s=@x; $x
+            `S=@x; "."/$x
+            ((::;::;`k)2^`c`C?@x)x]}
+test[,"a"]    cellShow@,"a"
+test["hi"]    cellShow "hi"
+test["hi"]    cellShow `hi
+test["hi.ho"] cellShow `hi`ho 
+test[cellShow@,`hi`ho] "`hi`ho"
+test[cellShow 0n] "0n"
+
+addKeyClass:@[;`classes;,[`key;]]
+test[(`classes!,`key`a;`classes!,`key`a); addKeyClass'`classes!/:2#`a]
+
+addColHeaderClass:@[;`classes;,[`colheader;]]
+
+/ TODO split concepts of 'hard' and literal?
+/ TODO dicts? tables?
+data:~^`i`f`c`I`F`C`s?@:
+hardnode:{
+ $[~^`o`p`q`r`u`v`w`x?@x; 0  / +: etc need an = in front
+   isSymNode x; 1            / `a or ,`a`b, but not `a`b
+   data x; 1                 / 1 2; "abc"
+   isEmptyListNode x; 1      / () "" !0 0#`
+   LIST~*x; 1                / generic list (`a;"bcd";+:)
+   (,:)~*x; data x 1         / single-item lists of literals
+   0]}                       / names are not (=abc ie type `S).
+test[hardnode`p"12"] 1
+test[hardnode`p"+:"] 0
+test[hardnode`p",1"] 1
+test[hardnode`p"1 2 3"] 1
+test[hardnode`p"`sym"] 1
+test[hardnode`p",`sym"] 1
+test[hardnode`p"`sym`list"] 1
+test[hardnode`p"abc"] 0
+test[hardnode`p"()"] 1
+test[hardnode`p"!0"] 1
+test[hardnode`p"0#a"] 1
+
+
+fbText:{[node;value;hard]
+        $[hard&1=#node; `k'value
+          hard; cellShow'value
+          (`C=@value)|=/1_:\@value; "=",unparser.unparse node
+          (#value)#,"=",unparser.unparse node]}
+cellsClasses:`nested^`number`number`text`text`symbol`fn`fn`fn`fn`fn`fn`fn`fn@`i`f`c`C`s`o`p`q`r`u`v`w`x?
+test[`number] cellsClasses@@1
+test[`number] cellsClasses@@1.0
+test[`text] cellsClasses@@"abc"
+test[`symbol] cellsClasses@@`abc
+test[`fn] cellsClasses@@(1+)
+test[`fn] cellsClasses@@{x+1}
+test[`nested] cellsClasses@@ `a`b!(1 2;3 4)
+test[`nested] cellsClasses@@+`a`b!(1 2;3 4)
+
+
+// table with external connections are not editable if either:
+// 'path' is not in meta, or
+// `encode is in but `decode is not
+// TODO make this show up in separate 'write-only' section of left-hand pane ('exports'?)
+//     and, uh, also make it actually write to disk
+isNotExternalEditable:{[meta] (0 1~^(!meta)?`encode`decode)|^(!meta)?`path}
+
+/ TODO empty list, keytables, ttables, matrix, ragged list (maybe?), etc
+
+addHeadType:{y,\:(,`headType)!,x}
+test[+`a`headType!(1 2 3;`m`m`m)]addHeadType[`m;+(,`a)!,1 2 3]
+
+offsetA1:{[a1;offsetsXY]
+          `s$,'/$`c`i$'offsetsXY+{(*`i$x;`I$y)}/0 1_$a1}
+test[`B1`B2`B3] offsetA1[`A1;(1 1 1;0 1 2)]
+
+addNameCell:{[cells;type;name]
+             / down: lists,dicts,tables; right: atoms,char lists
+             offset:((,0;,1);(,1;,0))
+             offset@:(~`m=type)&(`C=type)|type=_type
+             newkeys:,/offsetA1\:[!cells;offset]
+             (newkeys,*!cells)!(.cells),`show`fb`classes`head`path!($name;$name;,`name;name;!0)}
+test[`A2`A3`A1!(1;2;`show`fb`classes`head`path!("hello";"hello";,`name;`hello;!0))
+     addNameCell[`A1`A2!1 2;`I;`hello]]
+
+cells:{[a1;name;node;value;meta;calc]
+       r:$[`M=@value; cellsTable[a1;name;node;value;meta;calc]
+           `m=@value; $[`M=@. value; $[`M=@!value
+                                       cellsTableTable[a1;name;node;value;meta]
+                                       cellsKeyTable[a1;name;node;value;meta]]
+                        &/`M=@'value; $[&/1_~':!'.value
+                                        cellsKeyTableList[a1;name;node;value;meta]
+                                        cellsDict[a1;name;node;value;meta]]
+                        cellsDict[a1;name;node;value;meta]]
+           (`C=@value)|{x=_x}@@value; cellsSingle[a1;name;node;value]
+           cellsList[a1;name;node;value;meta;0]]
+       r:$[^(!meta)?`loc; r; addNameCell[r;@value;name]]
+       $[`M=@value; addHeadType`table
+         `m=@value; addHeadType`dict
+         (`C=@value)|{x=_x}@@value; addHeadType`simple 
+         addHeadType`list]r}
+
+cellsSingle:{[a1;name;node;value]
+             hard:hardnode node
+             a1!,`show`fb`classes`head`path!(cellShow value
+                                             fbText[node;value;hard]
+                                             (hard#`hard),cellsClasses@@value
+                                             name
+                                             !0)}
+test[(,`A1)!,`show`fb`classes`head`path!("123"; "123"; `hard`number; `n; !0)] cellsSingle[`A1;`n;123;123]
+test[(,`A1)!,`show`fb`classes`head`path!("hi"; "hi"; `hard`text; `n; !0)]     cellsSingle[`A1;`n;"hi";"hi"]
+test[(,`A1)!,`show`fb`classes`head`path!("hi"; "`hi"; `hard`symbol; `n; !0)]  cellsSingle[`A1;`n;`hi;`hi]
+test[(,`A1)!,`show`fb`classes`head`path!(,"3"; "=1+2"; ,`number; `n; !0)]    cellsSingle[`A1;`n;(+;1;2);3]
+
+ROWLIMIT:30
+cellsList:{[a1;name;node;value;meta;calcCol]
+           hard:(~calcCol)&hardnode[node]|~isNotExternalEditable meta
+           value:(ROWLIMIT&#value)#value  / TODO remove performance hack
+           / TODO really disable classes? alignment could be handy to show type
+           $[(~hard)&~#value  / early exit if empty.
+             : a1!,`show`fb`classes`head`path!("EMPTY";"=",unparser.unparse node;,`special;name;!0)  / ;`special,cellsClasses@@*value
+             ]  / TODO delete me?
+           ![`s${y,/:$(`I$z)+!x}[hard+#value]/0 1_$a1  / TODO generalise
+             +`show`fb`classes`head`path!((cellShow'value),hard#,"APPEND"
+                                          fbText[node;value;hard],hard#,""
+                                          ($[hard;`amendList`hard;0#`],/:cellsClasses@@'value),hard#,,`add
+                                          name
+                                          ,'!hard+#value)]}
+test[(,`A1)!,`show`fb`classes`head`path!("EMPTY"; "=!0*0"; ,`special; `n; !0)
+     cellsList[`A1;`n;(!:;(*;0;0));!0;0N;1]]
+test[(,`A1)!,`show`fb`classes`head`path!("APPEND"; ""; ,`add; `n; ,0)
+     cellsList[`A1;`n;(!:;0);!0;0N;0]]
+test[`A1`A2`A3`A4!+`show`fb`classes`head`path!(@[x;3;:;"APPEND"]
+                                               x:(,"1";,"2";,"3";"")
+                                               (3#,`amendList`hard`number),,,`add
+                                                4#`n
+                                                ,'!4)
+     cellsList[`A1;`n;1 2 3;1 2 3;0N;0]]
+test[`A1`A2`A3!+`show`fb`classes`head`path!(" "\"1 2 3"; 3#,"=1+!3"; 3#,,`number; 3#`n;,'!3)
+     cellsList[`A1;`n;(+;1;(!;3));1 2 3;0N;0N]]
+test[`A1`A2!+`show`fb`classes`head`path!(" "\"hello world"; 2#,"=\" \"\\\"hello world\""; 2#,,`text; 2#`n; ,'!2)
+     cellsList[`A1;`n;`p "\" \"\\\"hello world\"";("hello";"world");0N;0N]]
+/ TODO good test case: dict of string keys and/or values
+/ TODO address nested dict case
+
+cellsDict:{[a1;name;node;value;meta]
+           counts:.#'value
+           domain: addKeyClass'cellsList[a1; name; node; !value; meta; 0]  / TODO un-hard code?
+           range:cellsList[`s${(`c$1+*x),y}/0 1_$a1; name; node; . value; meta; 0]  / TODO generalise
+           range:@[;`path;:;]'[range;,'(ROWLIMIT&#value)#!value]
+           @[;`head;:;name]'domain,range}
+test[`A1`A2`A3`B1`B2`B3!+`show`fb`classes`head`path!(";"\"1;2;3;0 1 3;,2;4 5";6#,"==1 1 2 1 3 3";(3#,`key`number),3#,,`nested;6#`n;(,'!3),,'1 2 3)
+     cellsDict[`A1;`n;`p "=1 1 2 1 3 3";1 2 3!(0 1 3;,2;4 5);0N]]
+
+/ TODO how will 'add column' work if there are calculated columns in the way?
+/ eg is there another way to determine the col order?
+/ TODO make 'append row' cells only show on cols that are not calced columns
+/ have split out table header and data fns to get around fn length limit
+/ TODO 'value' will potentially have more columns than the literal defn (because of later calced cols)
+isTableEditable:{[node;meta] (`maketable~**node)|~isNotExternalEditable meta}
+
+cellsTableHeaders:{[a1;name;node;value;calc]
+ a:addColHeaderClass'{x,y}/cellsSingle'[`s$,\:/(`c$(!#*value)+*:;$`I$)@'0 1_$a1
+                         name
+                         (#*value)#,node
+                         !*value]
+ keys:(!a)(!value)?!calc
+ adjust:a keys
+ adjust:@[;`classes;,[;`calculated]]'adjust
+ a:@[a;keys;:;adjust]
+ @[;`path;:;]'[a;0N,/:!value]}  / TODO generalise
+test[`A1`B1!+`show`fb`classes`head`path!((,"a";,"b")
+                                         "=",'2#,f
+                                         (`colheader`symbol;`colheader`symbol`calculated)
+                                         2#`n
+                                         0N,/:,'`a`b)
+     cellsTableHeaders[`A1;`n;`p f:"t[,`a;,1 2]"; +`a`b!(1 3;2 4);(,`b)!,(+;1;1 3)]]
+
+cellsTableData:{[a1;name;node;value;meta;calc]
+ editable: isTableEditable[node;meta]&^(!calc)?!value  / is not calc col
+ / TODO are nodes not quite right for table 'literals' that contain formulas?
+ / process col-wise, not row-wise
+ nodes:(+((#*value)#,node; .value))@'editable
+ nodes:@[nodes;(!value)?!calc;:;.calc]
+ a:cellsList'[`s$,\:/(`c$(!#*value)+*:;$1+`I$)@'0 1_$a1
+              name
+              nodes
+              .value
+              (#*value)#,meta
+              ~^(!calc)?!value]
+ a:(editable+ROWLIMIT&#'.value)#'a  / strip 'append' cell from calc cols if present
+ a:{x,y}/a
+ @[;`path;:;]'[a;,/(!'editable+ROWLIMIT&#value),\:'!value]}  / TODO generalise
+cellsTable:{[a1;name;node;value;meta;calc]
+            / TODO should table headers that are symbols show as symbols?
+            / TODO table data cells should have amendTableCell class
+            / and separate paths. add in this fn call
+            data: cellsTableData[a1;name;node;value;meta;calc]
+            editable: isTableEditable[node;meta]
+            $[editable
+              data: @[;`classes;{@[x;&`amendList=x;:;`amendTableCell]}]'data
+            ]
+            $[editable
+              data: @[;`classes;{@[x;&`add=x;:;`addRow]}]'data
+            ]
+            newcol: $[editable
+                      ![`s$,/`c$((#*value)+;::)@'0 1_$a1
+                        ,`show`fb`classes`head!("ADD COL";"";,`addCol; name)]
+                      0#data]
+            data:cellsTableHeaders[a1;name;node;value;calc],data,newcol
+            data:@[;`head;:;name]'data
+            @[;`classes;,;(~^(!meta)?`path)#`external]'data}
+
+/ TABLE 'LITERAL' WITH CALC COL
+/ 2024-04-18 disabled test
+/test[`A1`B1`A2`A3`A4`B2`B3`C1!+`show`fb`classes`head`path!((,"a";,"b";,"1";,"3";"APPEND";,"2";,"4";"ADD COL")
+/                                                           ,/("=",'2#,a
+/                                                              (,"1";,"3";"")
+/                                                              (2#,"=1+1 3")
+/                                                              ,"")
+/                                                              (`colheader`symbol;`colheader`symbol`calculated),(2#,`amendTableCell`hard`number),(,,`addRow),(2#,,`number),,,`addCol
+/                                                              8#`n
+/                                                              (0N,`a; 0N,`b
+/                                                               0,`a;  1,`a; 2,`a
+/                                                               0,`b;  1,`b; "       "))
+/     cellsTable[`A1;`n;`p a:"maketable[,`a;,1 2]"; +`a`b!(1 3;2 4);(0#`)!();(,`b)!,(+;1;1 3)]]
+
+cellsKeyTable:{[a1;name;node;value;meta]
+               domain: addKeyClass'cellsList[`s$,/${x,1+`I$y}/0 1_$a1; name; node; !value; meta; 0]
+               / TODO generalise col ID increment logic
+               range: cellsTable[`s${(`c$1+*x),y}/0 1_$a1; name; node; . value; meta; (0#`)!()]
+               range: @[;`path;1_]'range        / remove row indices
+               valuepaths: (#*value)#0N         / replace w/ dict keys
+               valuepaths,:,/&(,!value)!#*value
+               range: @[;`path;{y,x};]'[range; ,'valuepaths]  
+               / shove the regular table result over by 1
+               / and add a normal dict col shoved one cell down
+               / maybe divert to normal dict logic instead?
+               @[;`head;:;name]'domain,range}
+
+test[`A2`A3`B1`C1`B2`B3`C2`C3!+`show`fb`classes`head`path!(" "\"key1 key2 a b 1 3 2 4"
+                                                     8#,"=`key1`key2!+`a`b!(1 3;2 4)"
+                                                     (2#,`key`symbol),(2#,`colheader`symbol),4#,,`number
+                                                     8#`n
+                                                     (,0;,1;0N,`a;0N,`b;`key1`a;`key2`a;`key1`b;`key2`b))
+     cellsKeyTable[`A1
+                   `n
+                   `p"`key1`key2!+`a`b!(1 3;2 4)"
+                   `key1`key2!+`a`b!(1 3;2 4)
+                   (0#`)!()]]
+
+/ maybe divert to normal dict logic instead?
+cellsTableTable:{[a1;name;node;value;meta]
+                 domain: addKeyClass'cellsTable[a1; name; node; !value; meta; (0#`)!()]
+                 / TODO generalise col ID increment logic
+                 range: cellsTable[`s${(`c$y+1|#*!x),z}[value]/0 1_$a1
+                                   name; node; . value; meta; (0#`)!()]
+                 range: @[;`path;1_]'range        / remove row indices
+                 valuepaths: (#*value)#0N         / replace w/ dict keys
+                 / TODO col headers should be null-filled table keys rather than 0N?
+                 valuepaths,:,/&(,!value)!#*value
+                 range: @[;`path;{y,x};]'[range; ,'valuepaths]  
+                 @[;`head;:;name]'domain,range}
+test[`A1`B1`A2`A3`B2`B3`C1`D1`C2`C3`D2`D3!+`show`fb`classes`head`path!(" "\"keycol1 keycol2 7 8 9 10 a b 1 3 2 4"
+                                           12#,"=(+`keycol1`keycol2!(7 8;9 10))!+`a`b!(1 3;2 4)"
+                                           (`key`colheader`symbol; `key`colheader`symbol
+                                            `key`number;`key`number;`key`number;`key`number
+                                            `colheader`symbol; `colheader`symbol),4#,,`number
+                                           12#`n
+                                           (0N,`keycol1; 0N,`keycol2
+                                             0,`keycol1; 1,`keycol1
+                                             0,`keycol2; 1,`keycol2
+                                            0N,`a;       0N,`b),,/(+`keycol1`keycol2!(7 8;9 10)),\:/:`a`b)
+     cellsTableTable[`A1
+                     `n
+                     `p"(+`keycol1`keycol2!(7 8;9 10))!+`a`b!(1 3;2 4)"
+                     (+`keycol1`keycol2!(7 8;9 10))!+`a`b!(1 3;2 4)
+                     (0#`)!()]]
+
+cellsKeyTableListDomain:{[a1;name;node;value;meta]
+                         counts:.+\0 :':#'value
+                         domain:. addKeyClass'cellsList[a1; name; node; !value; meta; 0]
+                         (`s${y,/:$(1+x)+`I$z}[counts]/$a1)!domain}
+cellsKeyTableListRange:{[a1;name;node;value;meta]
+                 / TODO alternating table rows need to be coloured
+                 counts:.#'value
+                 offsets:(1 0+!(#**value),1),'1+{,/'(0;0 :':+\x)++!'y,/:x}[counts;#**value]
+                 / TODO generalise col ID increment logic
+                 offsets:`s$,'/{(`c$x;$y)}/offsets+{(*x;`I$y)}/0 1_$a1
+                 range:.'cellsTableData[a1; name; node; ; meta; (0#`)!()]'. value
+                 range:(. cellsTableHeaders[a1;name;node;*. value;(0#`)!()]),{x,y}/@[range;&2!!#value;@[;`classes;,;`band]']
+                 range:offsets!range
+                 valuepaths:(#!*value)#`
+                 valuepaths,:&(!value)!(#!*.value)*#'. value
+                 @[;`path;{y,x};]'[range; ,'valuepaths]}
+cellsKeyTableList:{[a1;name;node;value;meta]
+                 domain:cellsKeyTableListDomain[a1;name;node;value;meta]
+                 range:cellsKeyTableListRange[a1;name;node;value;meta]
+                 @[;`head;:;name]'domain,range}
+test[`A2`A4`B1`C1`B2`B3`C2`C3`B4`C4!+`show`fb`classes`head`path!(" "\"a b A B 1 3 a a 2 b"
+                                                     10#,"={x@=x`B}@+`A`B!(1 2 3;`a`b`a)"
+                                                     (`key`symbol; `key`symbol
+                                                      `colheader`symbol; `colheader`symbol
+                                                      ,`number; ,`number
+                                                      ,`symbol; ,`symbol
+                                                      `number`band
+                                                      `symbol`band)
+                                                     10#`n
+                                                     (     ,0;      ,1   / keys
+                                                      `,0N,`A; `,0N,`B   / common table headers
+                                                      `a,0,`A; `a,1,`A   / first t first col
+                                                      `a,0,`B; `a,1,`B   / first t second col
+                                                      `b,0,`A; `b,0,`B)) / second t (cols 1,2)
+     cellsKeyTableList[`A1
+                       `n
+                       `p"{x@=x`B}@+`A`B!(1 2 3;`a`b`a)"
+                       `a`b!(+`A`B!(1 3;`a`a);+`A`B!(,2;,`b))
+                       (0#`)!()]]
+
+/ TABLE EXTERNAL
+/ Disabled test 2024-04-18
+/test[`A1`B1`A2`A3`A4`B2`B3`B4`C1!+`show`fb`classes`head`path!((,"a";,"b";,"1";,"3";"APPEND";,"2";,"4";"APPEND";"ADD COL")
+/                                                              ("=",'2#,unparser.unparse a),(,"1";,"3";"";,"2";,"4";"";"")
+/                                                              ,[;`external]'(2#,`colheader`symbol),(2#,`amendTableCell`hard`number),(,,`addRow),(2#,`amendTableCell`hard`number),(,,`addRow),,,`addCol
+/                                                              9#`n
+/                                                              (0N,`a;0N,`b;(0;`a);(1;`a);(2;`a);(0;`b);(1;`b);(2;`b);"       "))
+/     cellsTable[`A1;`n;a:`p"(meta`io)[meta`format;meta`path]"; +`a`b!(1 3;2 4);(,`path)!,"some file path";(0#`)!()]]
+
+/ TABLE READ-ONLY
+test[`A1`B1`A2`A3`B2`B3!+`show`fb`classes`head`path!(" "\"a b 1 3 2 4"
+                                                     "=",'6#,"+`a`b!(1 3;2 4)"
+                                                     (2#,`colheader`symbol),4#,,`number
+                                                     6#`n
+                                                     (0N,`a;0N,`b;(0;`a);(1;`a);(0;`b);(1;`b)))
+     cellsTable[`A1;`n;`p"+`a`b!(1 3;2 4)"; +`a`b!(1 3;2 4);(0#`)!();(0#`)!()]]
+
+
+/ Extract name, value nodes for each defn in the pt.
+/ Skip modified assignments, and take first defn if multiple.
+nnvn: {[pt]
+       assgtnodes:({(3=#x)&(:)~*x}')#pt
+       $[0=#assgtnodes; : (0#`;()); ]
+       assgtnodes@:&`S=@'assgtnodes@'1                  / skip modified assignments (calc cols)
+       assgtnodes@:&{@[&#x;:/'={x 1}'x;:;1]}assgtnodes  / skip format nodes
+       (names;values):1_+assgtnodes
+       (`s$"."/'$names;values)@\:?names?names}
+test[(0#`;())] nnvn parse ""
+test[(`a`b;(1;(+;,`a;1)))] nnvn parse "a:1;b:2;b:a+1;a+:1"
+test[(`a`b;1 2)] nnvn parse "a:1;b:2;a[`newcol]:3 4"
+
+
+/ Extract number format specs (if any).
+/ TODO: make work for anything other than number format codes
+
+/ @[;2;. unparser.unparse@]',(:;`a;(!;(,:;,`number);(,:;(!;,`a`b;1 2))))
+
+/ Regarding the way A1 locations are tracked for named cells,
+/ it's tempting to use name:A1: value... syntax,
+/ but that would create a copy of the data if calc cols are used
+/ (because 'name' changes and A1 doesn't), which could be expensive.
+/ TODO Remove name needs to rename the value back to the loc and remove the loc field
+addName:{[pt;A1;name]
+         pt:amendMeta[pt;A1;(!;(,:;,`loc);(,:;,A1))]
+         changeName[pt;A1;name]}
+test[parse"name:(,`loc)!,`A1;name:123"] addName[parse"A1:123";`A1;`name]
+test[parse"A1:(,`loc)!,`A1;A1:123"] addName[parse"A1:123";`A1;`A1]
+
+deps:{[names;valueNodes] names!unparser.unparse''onlyRefs'valueNodes}
+test[(`"a.b")!,("A1";"B2`hi")] deps[,`"a.b"; ,(+;,`A1;(,`B2;`hi))]
+
+
+/ Tip: If you're sending a message in the client and getting nothing back,
+/ paste the client string sent to the server here with prefix 'msg:'
+/ to see what the server is doing.
+
+/ msg:"{\"celltype\":\"empty\",\"action\":\"show\",\"payload\":\"\",\"coords\":[9,5],\"head\":\"J6\",\"source\":\"A1:1+2\\nB2:(,`exportTo)!,\\\"here.json\\\"\\nB2:1 2 3\\n\",\"path\":[]}"
+
+/ ---------
+/ MAIN LOOP
+/ ---------
+
+/ assumes 'msg' (message) is already defined above
+msg: jsonToAction msg             / sanitise message
+. msg`source                      / eval existing sheet so that mesh can see vars.
+                                  / TODO eval in new context
+                                  / TODO find a better way to do this
+pt: fixOrder triage msg           / exec action in message and get new, reordered parse tree
+. ns: unparser.unparse pt         / stringify and eval the new parse tree  TODO eval in new context
+(n;v):nnvn pt                     / get parse tree's name and value nodes
+vv:(.0#`)n                        / get values of evaluated cells  TODO get from separate context
+
+/ figure out what's in each grid cell:
+emptyCells:0#,(0#`)!+`show`fb`classes`head`path`headType!6#,!0
+cells:cells'[(+(.meta@'`loc;n))@'^(.!'meta)?'`loc; n; v; vv; . meta@:pt; . calc@:pt]
+cells:$[0=#cells; emptyCells; cells]
+/ note structure-preserving default 'emptyCells' to force structure in above -
+/ hopefully not necessary in future
+
+/ export cells with meta 'exportTo'.
+/ for each one, serialise and save using path in 'exportTo'
+/ and (if can't infer) encoder in meta
+/ TODO update the left-hand pane in client to show cells being exported
+/ and (eventually) allow editing and removing this meta data
+/ and allow custom encoder and IO function
+({path:y`exportTo
+  (encoder;io):`encode`io#serialiser fileExtension path
+  str:.(-1_encoder),,. x
+  io[path;str]}').{(!x;. x)}({^(!x)?`exportTo}')_meta;  / load-bearing semicolon (suppresses output of this line)
+
+/ calculate quickstats
+s:`s$$[`move=msg`action; msg`payload; msg`head]  / quickstats ref (might not work for col sum?)
+sum:{$[~^`i`f?_@x;+/x;`A=@x;+/o'x;`"N/A"]}
+s:$[^i:n?s; i
+    `M=@vv i; ,/$s,"`",(msg`path)1
+    `m=@vv i; ".",$s
+    $s]
+stats:$[*^s; 3#`"N/A"
+        |{($[(b>0)&~^`i`f?@a;a%b;`"N/A"]; b:#x; a:.[sum;,x;`"N/A"])}@.s]
+
+/ finally, update the client.
+`j@`source`cells`stats`overlap`meta`deps`namecount`ncall!(ns; {x,y}/cells; stats; &1<#'=,/!'cells; meta; deps[n;v]; #n; #.0#`)
+
+\\
