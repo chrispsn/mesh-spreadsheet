@@ -55,7 +55,7 @@ Mesh is a spreadsheet program that fits into software's typical development, rel
 
 1. [Get and build ngn/k](https://codeberg.org/ngn/k).
 2. Clone this repo.
-3. Make sure you have Python 3 and its `websockets` module installed.
+3. Make sure you have Python 3 and its `websockets` module installed. In Ubuntu, the latter is `sudo apt install python3-websockets`.
 4. Update the values in `vars.py`.
 5. Run `server.py` - this starts the backend.
 6. Start a second server to serve `index.html`. Try `python3 -m http.server` in the Mesh directory.
