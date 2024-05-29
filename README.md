@@ -20,7 +20,7 @@ Mesh is a spreadsheet program that fits into software's typical development and 
 - changes and releases can be managed via Git or other version control tools
 - calculations can be run 'headlessly', independently of the program used to write the code.
 
-If you maintain [load-bearing](https://xkcd.com/2347/) spreadsheets - files that are part of a process or periodically get rolled over - you might like Mesh.
+If you maintain [load-bearing](https://xkcd.com/2347/) spreadsheets - files that are part of a processing pipeline or periodically get rolled over - you might like Mesh.
 
 ## What Mesh does
 
