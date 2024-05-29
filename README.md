@@ -12,13 +12,15 @@ Mesh sheets are evaled on each recalc, and those evals are not sandboxed! Take c
 
 ## Who is Mesh for?
 
-Mesh is a spreadsheet program that fits into software's typical development and release workflows:
+Mesh is a spreadsheet program that fits into software's typical development and release workflows.
 
 - calculations are stored as text files
 - data can be of arbitrary length and defined structure (including empty data)
 - data is serialised in text files or stored in databases, instead of being stored in the sheet
 - changes and releases can be managed via Git or other version control tools
 - calculations can be run 'headlessly', independently of the program used to write the code.
+
+If you maintain [load bearing](https://xkcd.com/2347/) spreadsheets - files that are part of a process or periodically get rolled over - you might like Mesh. It might de-risk your assets and make your life easier.
 
 ## What Mesh does
 
