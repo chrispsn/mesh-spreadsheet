@@ -6,7 +6,7 @@ This is Mesh v3. The formula language is [ngn/k](https://codeberg.org/ngn/k), an
 
 This is a very early release, and it may not receive any updates. See [What needs work](#what-needs-work).
 
-Mesh sheets are evaled on each recalc, and those evals are not sandboxed! Take care with what you write in the formula bar.
+Sheets are evaled on each recalc, and those evals are not sandboxed! Take care with what you write in the formula bar.
 
 ![Mesh v3 demo](./demo.gif)
 
