@@ -16,7 +16,7 @@ Mesh is a spreadsheet program that fits into software's typical development and 
 
 - calculations are stored as text files
 - data can be of arbitrary length and defined structure (including empty data)
-- data is serialised in text files or stored in databases, instead of being stored in the sheet
+- data can optionally be stored in external files (eg `data.json`), instead of being stored in the sheet
 - changes and releases can be managed via Git or other version control tools
 - calculations can be run 'headlessly', independently of the program used to write the code.
 
