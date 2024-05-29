@@ -139,6 +139,7 @@ B2:1 2 3 4
 ### Packaging
 
 - A fully-in-browser WASM version, to make Mesh easier to try out.
+- Electron (or similar?), so that Mesh can interact more with the filesystem without needing a server.
 - A containerised (Dockerised?) version, to make installation easier.
 
 ### Deep dive: editable dicts and tables
