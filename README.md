@@ -32,10 +32,13 @@ If you maintain [load-bearing](https://xkcd.com/2347/) spreadsheets - files that
 - Hardcode cells look different to formula cells.
 - Format cell contents using [Intl.NumberFormat syntax](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat). For example, highlight a cell and press `Ctrl-Shift-4` to show values in dollars.
 - Cell names: toggle with `F3`. Change a cell's name by writing to its name cell. Mesh will update other cell formulas to use the new name.
-- Calculated table columns: ```table[`newCol]:1+table`existingCol```.
 - Connect to external data: drag a file onto the grid. For now, the file needs to be stored in the same folder as `server.py`.
 - Quick calcs about the selected data (count, sum, average), shown above the code pane.
-
+- Calculated table columns - add modified assignments below the top-level definition:
+```
+table:+`existingColumn!1 2 3
+table[`newColumn]:1+table`existingColumn
+```
 ### Unusual spreadsheet things
 
 - A completely different - but very powerful - formula language.
