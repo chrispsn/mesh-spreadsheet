@@ -67,6 +67,15 @@ table[`newColumn]:1+table`existingColumn
 6. Start a second server to serve `index.html`. Try `python3 -m http.server` in the Mesh directory.
 7. Go to `localhost:8000` in your browser.
 
+Alternatively, you can skip steps 1-5 and run the backend server via Docker. In the `mesh-spreadsheet` directory:
+
+```
+docker build -t mesh-spreadsheet .
+docker run --publish 8765:8765 mesh-spreadsheet
+```
+
+You'll still need a way to access `index.html` per step 6 above, and so you'll need a copy of `index.html` available to serve (clone this repo again?). Maybe that can be done in a higher-level Docker Compose file.
+
 ## How does Mesh work?
 
 Mesh sheets are stored as ngn/k code in text files. The sheet is shown in your web browser, the client; it's connected via WebSockets to a backend server that does calculations and updates files on your disk.
@@ -141,7 +150,6 @@ B2:1 2 3 4
 
 - A fully-in-browser WASM version, to make Mesh easier to try out.
 - Electron (or similar?), so that Mesh can interact more with the filesystem without needing a server.
-- A containerised (Dockerised?) version, to make installation easier.
 
 ### Deep dive: editable dicts and tables
 
