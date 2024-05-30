@@ -26,7 +26,7 @@ If you maintain [load-bearing](https://xkcd.com/2347/) spreadsheets - files that
 
 ### Usual spreadsheet things
 
-- Write data straight into cells. If it's data, Mesh will try to figure out the datatype you meant.
+- Write data straight into cells. Mesh will try to figure out the datatype you meant.
 - Formulas start with a `=` prefix: `=1+B2`.
 - Press `F2` or click the formula bar to edit a formula instead of overwriting it. Precedents are highlighted in the grid.
 - Hardcode cells look different to formula cells.
