@@ -30,6 +30,7 @@ If you maintain [load-bearing](https://xkcd.com/2347/) spreadsheets - files that
 - Formulas start with a `=` prefix: `=1+B2`.
 - Press `F2` or click the formula bar to edit a formula instead of overwriting it. Precedents are highlighted in the grid.
 - Hardcode cells look different to formula cells.
+- Data type is indicated by alignment (strings on the left, numbers on the right, everything else in the center).
 - Format cell contents using [Intl.NumberFormat syntax](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/NumberFormat). For example, highlight a cell and press `Ctrl-Shift-4` to show values in dollars.
 - Cell names: toggle with `F3`. Change a cell's name by writing to its name cell. Mesh will update other cell formulas to use the new name.
 - Connect to external data: drag a file onto the grid. For now, the file needs to be stored in the same folder as `server.py`.
