@@ -59,15 +59,15 @@ table[`newColumn]:1+table`existingColumn
 
 ## Install
 
-1. [Get and build ngn/k](https://codeberg.org/ngn/k).
-2. Clone this repo.
+1. Clone this repo.
+2. [Get and build ngn/k](https://codeberg.org/ngn/k).
 3. Make sure you have Python 3 and its `websockets` module installed. In Ubuntu, the latter is `sudo apt install python3-websockets`.
 4. Update the values in `vars.py`.
 5. Run `server.py` - this starts the backend.
 6. Start a second server to serve `index.html`. Try `python3 -m http.server` in the Mesh directory.
 7. Go to `localhost:8000` in your browser.
 
-Alternatively, you can skip steps 1-5 and run the backend server via Docker. In the `mesh-spreadsheet` directory:
+Alternatively, you can skip steps 2-5 and run the backend server via Docker. Clone this repo, then in the repo's directory:
 
 ```
 docker build -t mesh-spreadsheet .
