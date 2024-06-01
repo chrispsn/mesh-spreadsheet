@@ -55,6 +55,7 @@ table[`newColumn]:1+table`existingColumn
 - Excel file import ([OpenDocument](https://en.wikipedia.org/wiki/OpenDocument) 'zipped XML' sheets).
 - Charting - instead, use an external program such as [Observable Framework](https://observablehq.com/framework/) to re-render charts on file change.
 - Streaming data, or recalc when a file updates - instead, schedule or trigger data updates using cron or systemd timers.
+- Range references (`A1:B2`). Mesh doesn't use location-based references (which is why visual overlaps don't break calculations); however, values typed into an empty cell will be named based on their location.
 - Case-insensitive cell references.
 
 ## Install
