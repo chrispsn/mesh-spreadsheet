@@ -146,6 +146,7 @@ B2:1 2 3 4
 - A syntax that has nice dict and table literals and lets you specify expected/conversion types for external files.
 - Sandboxing.
 - A UI for editing calculated columns, and per-column formatting rules.
+- Maybe a dialect that treats strings as atoms? Strings (char lists) are special-cased in Mesh to only take up one cell, so backend logic would be simpler if this was done.
 
 ### Packaging
 
